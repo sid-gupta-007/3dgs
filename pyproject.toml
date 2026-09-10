@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "panogs"
+version = "0.1.0"
+description = "Local-first, unified image/panorama/video to 3D Gaussian Splatting reconstruction engine"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "PanoGS Team" }
+]
+dependencies = [
+    "numpy>=1.22.0",
+    "pillow>=9.0.0",
+    "pyyaml>=6.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0"
+]
+
+[project.scripts]
+panogs = "panogs.apps.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["panogs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

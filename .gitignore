@@ -1,0 +1,109 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.dll
+*.dylib
+
+# C/C++ build artifacts & CUDA
+*.o
+*.obj
+*.exp
+*.lib
+*.a
+
+# Distribution / packaging
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+.conda/
+
+# Unit test / coverage / linting caches
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# Project-specific outputs & scratch
+output/
+outputs/
+scratch/
+runs/
+logs/
+*.log
+
+# Heavy 3DGS & Model Checkpoints (untracked weights / exports)
+*.pth
+*.pt
+*.ckpt
+*.splat
+*.bin
+checkpoints/
+weights/
+wandb/
+
+# Data & Datasets (keep raw captures / datasets untracked)
+data/
+datasets/
+raw_data/
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# IDEs and Code Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini

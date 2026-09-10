@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PanoGS 3D Gaussian Splatting Explorer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #0a0b10;
+            --panel-bg: rgba(18, 20, 30, 0.82);
+            --panel-border: rgba(255, 255, 255, 0.1);
+            --accent: #6366f1;
+            --accent-hover: #4f46e5;
+            --accent-glow: rgba(99, 102, 241, 0.35);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --radius-md: 10px;
+            --radius-lg: 14px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* Glassmorphic Overlays */
+        .glass-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--panel-border);
+            border-radius: var(--radius-lg);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+        }
+
+        /* Top Header */
+        header {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 10px 18px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            z-index: 10;
+        }
+
+        .logo-box {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #6366f1, #ec4899);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 16px;
+            box-shadow: 0 0 15px var(--accent-glow);
+        }
+
+        .logo-text h1 {
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+            background: linear-gradient(135deg, #ffffff 40%, #a5b4fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .badge {
+            background: rgba(99, 102, 241, 0.18);
+            border: 1px solid rgba(99, 102, 241, 0.4);
+            color: #a5b4fc;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 4px 8px;
+            border-radius: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Stats HUD (Top Right) */
+        .stats-hud {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            padding: 10px 16px;
+            display: flex;
+            gap: 18px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            z-index: 10;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 10px;
+            text-transform: uppercase;
+        }
+
+        .stat-val {
+            color: #38bdf8;
+            font-weight: 600;
+        }
+
+        /* Side Controls Panel */
+        .controls-panel {
+            position: absolute;
+            top: 85px;
+            left: 20px;
+            width: 300px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            z-index: 10;
+            max-height: calc(100vh - 110px);
+            overflow-y: auto;
+        }
+
+        .section-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 2px;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .label-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .label-row span.val {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-primary);
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.12);
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+            box-shadow: 0 0 10px var(--accent-glow);
+            transition: transform 0.1s;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        .btn-group {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+
+        button {
+            padding: 9px 12px;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--panel-border);
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-primary);
+            font-family: 'Outfit', sans-serif;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        button:hover {
+            background: rgba(99, 102, 241, 0.3);
+            border-color: var(--accent);
+            box-shadow: 0 0 12px var(--accent-glow);
+        }
+
+        button.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            box-shadow: 0 0 12px var(--accent-glow);
+        }
+
+        /* Help bar (Bottom) */
+        .bottom-bar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 8px 20px;
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            z-index: 10;
+        }
+
+        .key-hint {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        kbd {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-primary);
+        }
+
+        /* Loading indicator */
+        #loader {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+            z-index: 50;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+
+        .spinner {
+            width: 44px;
+            height: 44px;
+            border: 3px solid rgba(99, 102, 241, 0.2);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #drop-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(10, 11, 16, 0.85);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+            font-size: 20px;
+            font-weight: 600;
+            border: 3px dashed var(--accent);
+        }
+
+        #drop-overlay.dragover {
+            opacity: 1;
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="glcanvas"></canvas>
+    </div>
+
+    <!-- Drop Zone -->
+    <div id="drop-overlay">Drop .splat or .ply file here to view</div>
+
+    <!-- Header -->
+    <header class="glass-panel">
+        <div class="logo-box">
+            <div class="logo-icon">P</div>
+            <div class="logo-text">
+                <h1>PanoGS Explorer</h1>
+            </div>
+        </div>
+        <div class="badge" id="view-mode-badge">Inside 360 View</div>
+    </header>
+
+    <!-- Stats HUD -->
+    <div class="stats-hud glass-panel">
+        <div class="stat-item">
+            <span class="stat-label">FPS</span>
+            <span class="stat-val" id="fps-val">60</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Gaussians</span>
+            <span class="stat-val" id="splat-count">Loading...</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Camera</span>
+            <span class="stat-val" id="cam-pos-val">0.0, 0.0, 0.0</span>
+        </div>
+    </div>
+
+    <!-- Controls Panel -->
+    <div class="controls-panel glass-panel">
+        <div class="section-title">Navigation Mode</div>
+        <div class="btn-group">
+            <button id="btn-mode-inside" class="active">Inside 360 Room</button>
+            <button id="btn-mode-orbit">Outside Orbit</button>
+        </div>
+
+        <div class="section-title" style="margin-top: 6px;">Viewport Settings</div>
+        
+        <div class="control-group">
+            <div class="label-row">
+                <span>Splat Scale</span>
+                <span class="val" id="scale-label">1.0x</span>
+            </div>
+            <input type="range" id="scale-slider" min="0.1" max="4.0" step="0.05" value="1.0">
+        </div>
+
+        <div class="control-group">
+            <div class="label-row">
+                <span>Field of View</span>
+                <span class="val" id="fov-label">75°</span>
+            </div>
+            <input type="range" id="fov-slider" min="30" max="110" step="1" value="75">
+        </div>
+
+        <div class="control-group">
+            <div class="label-row">
+                <span>Min Opacity Cutoff</span>
+                <span class="val" id="alpha-label">0.01</span>
+            </div>
+            <input type="range" id="alpha-slider" min="0.0" max="0.5" step="0.01" value="0.01">
+        </div>
+
+        <div class="section-title" style="margin-top: 6px;">Environment</div>
+        <div class="btn-group">
+            <button id="bg-dark" class="active">Pitch Dark</button>
+            <button id="bg-gray">Studio Gray</button>
+            <button id="bg-white">Clean White</button>
+            <button id="bg-blue">Deep Space</button>
+        </div>
+
+        <div class="section-title" style="margin-top: 6px;">Actions</div>
+        <div class="btn-group">
+            <button id="btn-center">Center in Room</button>
+            <button id="btn-snap">Capture Snapshot</button>
+        </div>
+    </div>
+
+    <!-- Bottom Help Bar -->
+    <div class="bottom-bar glass-panel">
+        <div class="key-hint"><kbd>Left Drag</kbd> <span id="help-drag">Look Around 360°</span></div>
+        <div class="key-hint"><kbd>W A S D</kbd> Walk Inside Room</div>
+        <div class="key-hint"><kbd>Wheel</kbd> Zoom / Move</div>
+    </div>
+
+    <!-- Loading Spinner -->
+    <div id="loader">
+        <div class="spinner"></div>
+        <p style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">Loading 3D Gaussian Splats...</p>
+    </div>
+
+    <script>
+        // WebGL Splat Viewer Engine
+        const canvas = document.getElementById("glcanvas");
+        const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
+        if (!gl) {
+            alert("WebGL 2.0 is required to view 3D Gaussian Splats.");
+        }
+
+        let numGaussians = 0;
+        let splatBuffer = null;
+
+        // Navigation Modes: "inside" (first-person 360 look-around) or "orbit" (outside orbit)
+        let navigationMode = "inside";
+
+        // Camera State
+        let cameraPos = [0.0, 0.0, 0.0];      // Inside camera position
+        let cameraYaw = 0.0;                  // Horizontal angle in degrees
+        let cameraPitch = 0.0;                // Vertical angle in degrees
+        let orbitDistance = 4.0;              // Distance when in orbit mode
+        let fov = 75.0;
+        let splatScaleMultiplier = 1.0;
+        let minAlphaCutoff = 0.01;
+        let bgColor = [0.039, 0.043, 0.063, 1.0];
+
+        let isDragging = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+
+        // FPS tracking
+        let lastTime = performance.now();
+        let frameCount = 0;
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth * window.devicePixelRatio;
+            canvas.height = window.innerHeight * window.devicePixelRatio;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+        window.addEventListener("resize", resizeCanvas);
+        resizeCanvas();
+
+        // Vertex Shader: Real-Time 3D Gaussian Projective Rasterizer
+        const vsSource = `#version 300 es
+        precision highp float;
+
+        layout(location = 0) in vec3 a_position;
+        layout(location = 1) in vec3 a_scale;
+        layout(location = 2) in vec4 a_color;
+        layout(location = 3) in vec4 a_quat;
+        layout(location = 4) in vec2 a_quad_pos; // quad corner [-1, 1]
+
+        uniform mat4 u_view;
+        uniform mat4 u_projection;
+        uniform vec2 u_viewport;
+        uniform float u_scale_mult;
+        uniform float u_focal;
+
+        out vec4 v_color;
+        out vec3 v_conic;
+        out vec2 v_screen_offset;
+
+        mat3 quatToMat3(vec4 q) {
+            float qw = q.x;
+            float qx = q.y;
+            float qy = q.z;
+            float qz = q.w;
+            return mat3(
+                1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy + qw * qz), 2.0 * (qx * qz - qw * qy),
+                2.0 * (qx * qy - qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz + qw * qx),
+                2.0 * (qx * qz + qw * qy), 2.0 * (qy * qz - qw * qx), 1.0 - 2.0 * (qx * qx + qy * qy)
+            );
+        }
+
+        void main() {
+            v_color = a_color;
+
+            // Transform position to camera space
+            vec4 p_cam = u_view * vec4(a_position, 1.0);
+            float z = -p_cam.z;
+            if (z <= 0.04) {
+                gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+                return;
+            }
+
+            // Unpack rotation quaternion and scale
+            vec4 q = normalize(a_quat * 2.0 - 1.0);
+            mat3 R = quatToMat3(q);
+            vec3 s = a_scale * u_scale_mult;
+            mat3 S = mat3(
+                s.x, 0.0, 0.0,
+                0.0, s.y, 0.0,
+                0.0, 0.0, s.z
+            );
+            mat3 M = R * S;
+            mat3 Sigma = M * transpose(M);
+
+            // Camera view rotation W
+            mat3 W = mat3(u_view);
+
+            // Perspective Jacobian J (2x3)
+            float fx = u_focal;
+            float fy = u_focal;
+            float z2 = z * z;
+            mat3x2 J = mat3x2(
+                fx / z, 0.0,
+                0.0, fy / z,
+                -(fx * p_cam.x) / z2, -(fy * p_cam.y) / z2
+            );
+
+            // Screen covariance V = (J * W) * Sigma * (J * W)^T + 0.3 * I
+            mat3x2 T = J * W;
+            mat3x2 TS = T * Sigma;
+            mat2 V = TS * transpose(T);
+            V[0][0] += 0.3;
+            V[1][1] += 0.3;
+
+            float a = V[0][0];
+            float b = V[0][1];
+            float c = V[1][1];
+
+            float det = a * c - b * b;
+            if (det <= 0.0001) {
+                gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+                return;
+            }
+
+            // Inverse 2D covariance conic [c/det, -b/det, a/det]
+            v_conic = vec3(c / det, -b / det, a / det);
+
+            // Eigenvalues of 2D screen ellipse
+            float mid = 0.5 * (a + c);
+            float diff = 0.5 * (a - c);
+            float term = sqrt(max(0.01, diff * diff + b * b));
+            float lambda1 = mid + term;
+            float lambda2 = max(0.01, mid - term);
+
+            // Major and minor axis vectors
+            vec2 v1 = vec2(b, lambda1 - a);
+            float v1_len = length(v1);
+            if (v1_len < 1e-4) {
+                v1 = vec2(1.0, 0.0);
+            } else {
+                v1 = v1 / v1_len;
+            }
+            vec2 v2 = vec2(-v1.y, v1.x);
+
+            float r1 = min(400.0, 3.0 * sqrt(max(0.1, lambda1)));
+            float r2 = min(400.0, 3.0 * sqrt(max(0.1, lambda2)));
+
+            vec2 offset_pix = a_quad_pos.x * v1 * r1 + a_quad_pos.y * v2 * r2;
+            v_screen_offset = offset_pix;
+
+            vec4 p_clip = u_projection * p_cam;
+            vec2 offset_ndc = (offset_pix / u_viewport) * 2.0;
+            p_clip.xy += offset_ndc * p_clip.w;
+
+            gl_Position = p_clip;
+        }
+        `;
+
+        // Fragment Shader: Exact 2D Gaussian Elliptical Decay
+        const fsSource = `#version 300 es
+        precision highp float;
+
+        in vec4 v_color;
+        in vec3 v_conic;
+        in vec2 v_screen_offset;
+
+        uniform float u_min_alpha;
+        out vec4 fragColor;
+
+        void main() {
+            vec2 d = v_screen_offset;
+            float power = -0.5 * (v_conic.x * d.x * d.x + 2.0 * v_conic.y * d.x * d.y + v_conic.z * d.y * d.y);
+            if (power > 0.0 || power < -4.5) {
+                discard;
+            }
+
+            float alpha = v_color.a * exp(power);
+            if (alpha < u_min_alpha) {
+                discard;
+            }
+
+            fragColor = vec4(v_color.rgb, alpha);
+        }
+        `;
+
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        const vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+        const fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+        const program = gl.createProgram();
+        gl.attachShader(program, vs);
+        gl.attachShader(program, fs);
+        gl.linkProgram(program);
+
+        // Uniform locations
+        const uView = gl.getUniformLocation(program, "u_view");
+        const uProj = gl.getUniformLocation(program, "u_projection");
+        const uViewport = gl.getUniformLocation(program, "u_viewport");
+        const uScaleMult = gl.getUniformLocation(program, "u_scale_mult");
+        const uFocal = gl.getUniformLocation(program, "u_focal");
+        const uMinAlpha = gl.getUniformLocation(program, "u_min_alpha");
+
+        // Quad geometry for instancing
+        const quadData = new Float32Array([
+            -1.0, -1.0,
+             1.0, -1.0,
+            -1.0,  1.0,
+             1.0,  1.0,
+        ]);
+        const quadBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, quadData, gl.STATIC_DRAW);
+
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+
+        // Attribute 4: quad coords (per vertex, 4 vertices)
+        gl.enableVertexAttribArray(4);
+        gl.vertexAttribPointer(4, 2, gl.FLOAT, false, 0, 0);
+
+        // Splat data instance buffer
+        splatBuffer = gl.createBuffer();
+
+        function setupSplatAttributes(buffer) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+
+            // a_position (offset 0, float32 * 3 = 12 bytes)
+            gl.enableVertexAttribArray(0);
+            gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+            gl.vertexAttribDivisor(0, 1);
+
+            // a_scale (offset 12, float32 * 3 = 12 bytes)
+            gl.enableVertexAttribArray(1);
+            gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+            gl.vertexAttribDivisor(1, 1);
+
+            // a_color (offset 24, uint8 * 4 = 4 bytes, normalized)
+            gl.enableVertexAttribArray(2);
+            gl.vertexAttribPointer(2, 4, gl.UNSIGNED_BYTE, true, 32, 24);
+            gl.vertexAttribDivisor(2, 1);
+
+            // a_quat (offset 28, uint8 * 4 = 4 bytes, normalized)
+            gl.enableVertexAttribArray(3);
+            gl.vertexAttribPointer(3, 4, gl.UNSIGNED_BYTE, true, 32, 28);
+            gl.vertexAttribDivisor(3, 1);
+        }
+
+        // Matrix Math Helpers
+        function mat4Perspective(fovyRad, aspect, near, far) {
+            const f = 1.0 / Math.tan(fovyRad / 2.0);
+            const nf = 1.0 / (near - far);
+            return [
+                f / aspect, 0, 0, 0,
+                0, f, 0, 0,
+                0, 0, (far + near) * nf, -1,
+                0, 0, (2.0 * far * near) * nf, 0
+            ];
+        }
+
+        function mat4LookAt(eye, target, up) {
+            let zx = eye[0] - target[0], zy = eye[1] - target[1], zz = eye[2] - target[2];
+            let zlen = Math.hypot(zx, zy, zz);
+            if (zlen === 0) zlen = 1;
+            zx /= zlen; zy /= zlen; zz /= zlen;
+
+            let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+            let xlen = Math.hypot(xx, xy, xz);
+            if (xlen === 0) xlen = 1;
+            xx /= xlen; xy /= xlen; xz /= xlen;
+
+            let yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+
+            return [
+                xx, yx, zx, 0,
+                xy, yy, zy, 0,
+                xz, yz, zz, 0,
+                -(xx * eye[0] + xy * eye[1] + xz * eye[2]),
+                -(yx * eye[0] + yy * eye[1] + yz * eye[2]),
+                -(zx * eye[0] + zy * eye[1] + zz * eye[2]),
+                1
+            ];
+        }
+
+        // Load Splat Data
+        async function loadSplatBuffer(buffer) {
+            const bytesPerGaussian = 32;
+            numGaussians = Math.floor(buffer.byteLength / bytesPerGaussian);
+
+            document.getElementById("splat-count").textContent = numGaussians.toLocaleString();
+            document.getElementById("loader").style.opacity = "0";
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, splatBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, buffer, gl.STATIC_DRAW);
+
+            setupSplatAttributes(splatBuffer);
+
+            // Default position: inside at origin (0, 0, 0)
+            cameraPos = [0.0, 0.0, 0.0];
+            cameraYaw = 0.0;
+            cameraPitch = 0.0;
+            updateCamPosHUD();
+        }
+
+        async function loadSceneFile(url) {
+            try {
+                const res = await fetch(url);
+                const arrayBuffer = await res.arrayBuffer();
+                await loadSplatBuffer(arrayBuffer);
+            } catch (err) {
+                console.error("Failed to load scene from server:", err);
+                document.getElementById("loader").style.display = "none";
+            }
+        }
+
+        function updateCamPosHUD() {
+            document.getElementById("cam-pos-val").textContent = 
+                `${cameraPos[0].toFixed(1)}, ${cameraPos[1].toFixed(1)}, ${cameraPos[2].toFixed(1)}`;
+        }
+
+        // Mouse & Interaction Listeners
+        canvas.addEventListener("contextmenu", e => e.preventDefault());
+
+        canvas.addEventListener("mousedown", e => {
+            isDragging = true;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+        });
+
+        window.addEventListener("mouseup", () => isDragging = false);
+
+        window.addEventListener("mousemove", e => {
+            if (!isDragging) return;
+            const dx = e.clientX - lastMouseX;
+            const dy = e.clientY - lastMouseY;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+
+            if (navigationMode === "inside") {
+                // First person look around: yaw & pitch
+                cameraYaw += dx * 0.35;
+                cameraPitch = Math.max(-89, Math.min(89, cameraPitch + dy * 0.35));
+            } else {
+                // Outside Orbit
+                cameraYaw += dx * 0.4;
+                cameraPitch = Math.max(-89, Math.min(89, cameraPitch + dy * 0.4));
+            }
+        });
+
+        canvas.addEventListener("wheel", e => {
+            e.preventDefault();
+            if (navigationMode === "inside") {
+                // Move forward / backward along view direction
+                const yawRad = cameraYaw * Math.PI / 180;
+                const pitchRad = cameraPitch * Math.PI / 180;
+                const fwdX = Math.sin(yawRad) * Math.cos(pitchRad);
+                const fwdY = -Math.sin(pitchRad);
+                const fwdZ = Math.cos(yawRad) * Math.cos(pitchRad);
+
+                const speed = -e.deltaY * 0.003;
+                cameraPos[0] += fwdX * speed;
+                cameraPos[1] += fwdY * speed;
+                cameraPos[2] += fwdZ * speed;
+                updateCamPosHUD();
+            } else {
+                orbitDistance = Math.max(0.5, Math.min(40.0, orbitDistance + e.deltaY * 0.005));
+            }
+        }, { passive: false });
+
+        // WASD Walkthrough
+        window.addEventListener("keydown", e => {
+            const yawRad = cameraYaw * Math.PI / 180;
+            const fwdX = Math.sin(yawRad);
+            const fwdZ = Math.cos(yawRad);
+            const rightX = Math.cos(yawRad);
+            const rightZ = -Math.sin(yawRad);
+            const moveSpeed = 0.15;
+
+            if (e.key === "w" || e.key === "W" || e.key === "ArrowUp") {
+                cameraPos[0] += fwdX * moveSpeed;
+                cameraPos[2] += fwdZ * moveSpeed;
+            } else if (e.key === "s" || e.key === "S" || e.key === "ArrowDown") {
+                cameraPos[0] -= fwdX * moveSpeed;
+                cameraPos[2] -= fwdZ * moveSpeed;
+            } else if (e.key === "a" || e.key === "A" || e.key === "ArrowLeft") {
+                cameraPos[0] -= rightX * moveSpeed;
+                cameraPos[2] -= rightZ * moveSpeed;
+            } else if (e.key === "d" || e.key === "D" || e.key === "ArrowRight") {
+                cameraPos[0] += rightX * moveSpeed;
+                cameraPos[2] += rightZ * moveSpeed;
+            } else if (e.key === "e" || e.key === "E") {
+                cameraPos[1] += moveSpeed; // Elevate
+            } else if (e.key === "q" || e.key === "Q") {
+                cameraPos[1] -= moveSpeed; // Lower
+            }
+            updateCamPosHUD();
+        });
+
+        // Mode Switching
+        document.getElementById("btn-mode-inside").onclick = (e) => {
+            navigationMode = "inside";
+            document.getElementById("btn-mode-inside").classList.add("active");
+            document.getElementById("btn-mode-orbit").classList.remove("active");
+            document.getElementById("view-mode-badge").textContent = "Inside 360 View";
+            document.getElementById("help-drag").textContent = "Look Around 360°";
+            cameraPos = [0.0, 0.0, 0.0];
+            updateCamPosHUD();
+        };
+
+        document.getElementById("btn-mode-orbit").onclick = (e) => {
+            navigationMode = "orbit";
+            document.getElementById("btn-mode-orbit").classList.add("active");
+            document.getElementById("btn-mode-inside").classList.remove("active");
+            document.getElementById("view-mode-badge").textContent = "Outside Orbit";
+            document.getElementById("help-drag").textContent = "Orbit Around Scene";
+        };
+
+        // UI Controls
+        document.getElementById("scale-slider").addEventListener("input", e => {
+            splatScaleMultiplier = parseFloat(e.target.value);
+            document.getElementById("scale-label").textContent = splatScaleMultiplier.toFixed(2) + "x";
+        });
+
+        document.getElementById("fov-slider").addEventListener("input", e => {
+            fov = parseFloat(e.target.value);
+            document.getElementById("fov-label").textContent = fov.toFixed(0) + "°";
+        });
+
+        document.getElementById("alpha-slider").addEventListener("input", e => {
+            minAlphaCutoff = parseFloat(e.target.value);
+            document.getElementById("alpha-label").textContent = minAlphaCutoff.toFixed(2);
+        });
+
+        // Backgrounds
+        function setBg(color, activeBtn) {
+            bgColor = color;
+            document.querySelectorAll("#bg-dark, #bg-gray, #bg-white, #bg-blue").forEach(b => b.classList.remove("active"));
+            activeBtn.classList.add("active");
+        }
+        document.getElementById("bg-dark").onclick = (e) => setBg([0.039, 0.043, 0.063, 1.0], e.target);
+        document.getElementById("bg-gray").onclick = (e) => setBg([0.2, 0.22, 0.25, 1.0], e.target);
+        document.getElementById("bg-white").onclick = (e) => setBg([0.95, 0.95, 0.97, 1.0], e.target);
+        document.getElementById("bg-blue").onclick = (e) => setBg([0.02, 0.04, 0.12, 1.0], e.target);
+
+        document.getElementById("btn-center").onclick = () => {
+            cameraPos = [0.0, 0.0, 0.0];
+            cameraYaw = 0.0;
+            cameraPitch = 0.0;
+            updateCamPosHUD();
+        };
+
+        document.getElementById("btn-snap").onclick = () => {
+            const link = document.createElement("a");
+            link.download = "panogs_snapshot.png";
+            link.href = canvas.toDataURL("image/png");
+            link.click();
+        };
+
+        // Drag & Drop
+        const dropOverlay = document.getElementById("drop-overlay");
+        window.addEventListener("dragover", e => { e.preventDefault(); dropOverlay.classList.add("dragover"); });
+        dropOverlay.addEventListener("dragleave", () => dropOverlay.classList.remove("dragover"));
+        dropOverlay.addEventListener("drop", async e => {
+            e.preventDefault();
+            dropOverlay.classList.remove("dragover");
+            const file = e.dataTransfer.files[0];
+            if (file) {
+                const buf = await file.arrayBuffer();
+                await loadSplatBuffer(buf);
+            }
+        });
+
+        // Render Loop
+        function render() {
+            // FPS calculation
+            frameCount++;
+            const now = performance.now();
+            if (now - lastTime >= 1000) {
+                document.getElementById("fps-val").textContent = frameCount;
+                frameCount = 0;
+                lastTime = now;
+            }
+
+            gl.clearColor(bgColor[0], bgColor[1], bgColor[2], bgColor[3]);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            if (numGaussians > 0) {
+                gl.enable(gl.BLEND);
+                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+                gl.disable(gl.DEPTH_TEST);
+
+                gl.useProgram(program);
+
+                let eyeX, eyeY, eyeZ;
+                let targetX, targetY, targetZ;
+
+                const yawRad = cameraYaw * Math.PI / 180;
+                const pitchRad = cameraPitch * Math.PI / 180;
+
+                if (navigationMode === "inside") {
+                    // Camera is inside room at cameraPos, looking along (yaw, pitch)
+                    eyeX = cameraPos[0];
+                    eyeY = cameraPos[1];
+                    eyeZ = cameraPos[2];
+
+                    const fwdX = Math.sin(yawRad) * Math.cos(pitchRad);
+                    const fwdY = -Math.sin(pitchRad);
+                    const fwdZ = Math.cos(yawRad) * Math.cos(pitchRad);
+
+                    targetX = eyeX + fwdX;
+                    targetY = eyeY + fwdY;
+                    targetZ = eyeZ + fwdZ;
+                } else {
+                    // Outside Orbit
+                    eyeX = orbitDistance * Math.sin(yawRad) * Math.cos(pitchRad);
+                    eyeY = orbitDistance * Math.sin(pitchRad);
+                    eyeZ = orbitDistance * Math.cos(yawRad) * Math.cos(pitchRad);
+
+                    targetX = 0.0;
+                    targetY = 0.0;
+                    targetZ = 0.0;
+                }
+
+                const viewMat = mat4LookAt([eyeX, eyeY, eyeZ], [targetX, targetY, targetZ], [0, 1, 0]);
+                const aspect = canvas.width / canvas.height;
+                const projMat = mat4Perspective(fov * Math.PI / 180, aspect, 0.02, 100.0);
+                const focal = (canvas.height / 2.0) / Math.tan(fov * Math.PI / 360);
+
+                gl.uniformMatrix4fv(uView, false, new Float32Array(viewMat));
+                gl.uniformMatrix4fv(uProj, false, new Float32Array(projMat));
+                gl.uniform2f(uViewport, canvas.width, canvas.height);
+                gl.uniform1f(uScaleMult, splatScaleMultiplier);
+                gl.uniform1f(uFocal, focal);
+                gl.uniform1f(uMinAlpha, minAlphaCutoff);
+
+                gl.bindVertexArray(vao);
+                gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, numGaussians);
+            }
+
+            requestAnimationFrame(render);
+        }
+
+        // Auto load stream
+        loadSceneFile("/api/scene.splat");
+        requestAnimationFrame(render);
+    </script>
+</body>
+</html>
