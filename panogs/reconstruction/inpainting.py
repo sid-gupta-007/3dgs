@@ -38,8 +38,8 @@ def segment_foreground_objects(
     if background_depth is not None:
         bg = np.maximum(background_depth, d)
     else:
-        # Multi-scale morphological background estimation
-        k_size = max(15, int(min(H, W) * 0.45) | 1)
+        # Morphological dilation to span across foreground objects without exceeding local room envelope
+        k_size = max(45, min(75, int(min(H, W) * 0.10)) | 1)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
         bg = cv2.dilate(d, kernel)
 
@@ -94,13 +94,30 @@ def inpaint_background_texture(
     dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     dilated_mask = cv2.dilate(object_mask, dilate_kernel)
 
-    # OpenCV inpaint works on BGR uint8
-    img_bgr = cv2.cvtColor(img_u8, cv2.COLOR_RGB2BGR)
+    # Fast multi-scale processing for large panoramas
+    orig_h, orig_w = img_u8.shape[:2]
+    max_dim = max(orig_h, orig_w)
+    if max_dim > 1024:
+        scale = 1024.0 / max_dim
+        proc_w = int(orig_w * scale)
+        proc_h = int(orig_h * scale)
+        small_img = cv2.resize(img_u8, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
+        small_mask = cv2.resize(dilated_mask, (proc_w, proc_h), interpolation=cv2.INTER_NEAREST)
 
-    flag = cv2.INPAINT_TELEA if method.lower() == "telea" else cv2.INPAINT_NS
-    inpainted_bgr = cv2.inpaint(img_bgr, dilated_mask, inpaint_radius, flag)
+        img_bgr = cv2.cvtColor(small_img, cv2.COLOR_RGB2BGR)
+        flag = cv2.INPAINT_TELEA if method.lower() == "telea" else cv2.INPAINT_NS
+        inpainted_small_bgr = cv2.inpaint(img_bgr, small_mask, inpaint_radius, flag)
+        inpainted_small_rgb = cv2.cvtColor(inpainted_small_bgr, cv2.COLOR_BGR2RGB)
 
-    inpainted_rgb = cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2RGB)
+        inpainted_rgb = cv2.resize(inpainted_small_rgb, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+        # Keep original pixels where mask was not applied
+        mask_3d = (dilated_mask > 0)[:, :, np.newaxis]
+        inpainted_rgb = np.where(mask_3d, inpainted_rgb, img_u8)
+    else:
+        img_bgr = cv2.cvtColor(img_u8, cv2.COLOR_RGB2BGR)
+        flag = cv2.INPAINT_TELEA if method.lower() == "telea" else cv2.INPAINT_NS
+        inpainted_bgr = cv2.inpaint(img_bgr, dilated_mask, inpaint_radius, flag)
+        inpainted_rgb = cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2RGB)
 
     if was_float:
         return inpainted_rgb.astype(np.float32) / 255.0

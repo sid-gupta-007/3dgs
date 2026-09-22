@@ -92,3 +92,16 @@ def test_cli_view_help(capsys):
     captured = capsys.readouterr()
     assert "WebGL" in captured.out
     assert "model_path" in captured.out
+
+
+def test_viewer_html_collision_sliding_features():
+    """Verify index.html includes density-filtered obstacle grid, spawn clearance, and tangent sliding."""
+    html_path = Path(__file__).parent.parent / "panogs" / "apps" / "viewer" / "index.html"
+    assert html_path.exists()
+    content = html_path.read_text(encoding="utf-8")
+
+    assert "SPAWN_CLEAR_RADIUS" in content
+    assert "MIN_POINTS_FOR_SOLID" in content
+    assert "findNearestObstacle" in content
+    assert "toggleCollision" in content
+    assert "resolveMovement" in content

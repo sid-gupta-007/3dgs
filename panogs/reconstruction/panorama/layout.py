@@ -227,11 +227,23 @@ def reconstruct_layout_panorama(
     # 4. Backproject into 3D Euclidean coordinates: P = d * rays
     P = d_final[:, :, np.newaxis] * rays
 
-    # 5. Detect depth discontinuity edges for object silhouettes
+    # 5. Segment foreground furniture and inpaint occluded background
+    from panogs.reconstruction.inpainting import inpaint_background_texture, segment_foreground_objects
+
     logger.info("Detecting depth discontinuity edges...")
     edge_mask = detect_depth_edges(d_final, rel_threshold=0.12, abs_threshold=0.25)
     edge_count = np.count_nonzero(edge_mask)
     logger.info(f"Found {edge_count:,} depth-edge silhouette pixels ({100.0 * edge_count / (H*W):.1f}% of image)")
+
+    logger.info("Segmenting foreground furniture & inpainting occluded floorboards...")
+    fg_mask = segment_foreground_objects(d_final, rel_depth_threshold=0.18, min_size_pixels=150)
+    fg_count = np.count_nonzero(fg_mask)
+    logger.info(f"Segmented {fg_count:,} foreground furniture pixels ({100.0 * fg_count / (H * W):.1f}%).")
+
+    if fg_count > 0:
+        bg_rgb = inpaint_background_texture(img_rgb, fg_mask, inpaint_radius=9, method="telea")
+    else:
+        bg_rgb = img_rgb.copy()
 
     # 6. Compute 3D surface normals from spatial geometry
     logger.info("Computing surface normals from 3D geometry...")
@@ -262,10 +274,67 @@ def reconstruct_layout_panorama(
     n_final_len[n_final_len == 0] = 1.0
     normals_final = (normals_final / n_final_len).astype(np.float32)
 
-    flat_points = P.reshape(-1, 3).astype(np.float32)
-    flat_colors = img_rgb.reshape(-1, 3).astype(np.uint8)
-    flat_normals = normals_final.reshape(-1, 3).astype(np.float32)
-    flat_edge_mask = edge_mask.reshape(-1)
+    # Filter out flying transition slope pixels so furniture doesn't smear into walls
+    flying_mask = detect_depth_edges(d_final, rel_threshold=0.10, abs_threshold=0.25)
+    keep_primary = ~flying_mask.reshape(-1)
+
+    flat_P = P.reshape(-1, 3).astype(np.float32)[keep_primary]
+    flat_C = img_rgb.reshape(-1, 3).astype(np.uint8)[keep_primary]
+    flat_N = normals_final.reshape(-1, 3).astype(np.float32)[keep_primary]
+    flat_E = edge_mask.reshape(-1)[keep_primary]
+
+    all_points = [flat_P]
+    all_colors = [flat_C]
+    all_normals = [flat_N]
+    all_edges = [flat_E]
+
+    # 7. Ground Floor Infilling: synthesize floor splats under occluded furniture
+    ry = rays[:, :, 1]
+    floor_occluded = (fg_mask > 0) & (ry < -0.06)
+    if np.any(floor_occluded):
+        d_floor_target = h_floor / (-ry[floor_occluded])
+        d_current = d_final[floor_occluded]
+        valid_infill = (d_floor_target > d_current + 0.25) & (d_floor_target < 20.0)
+
+        if np.any(valid_infill):
+            infill_rays = rays[floor_occluded][valid_infill]
+            infill_d = d_floor_target[valid_infill, np.newaxis]
+            infill_pts = (infill_rays * infill_d).astype(np.float32)
+            infill_cols = bg_rgb[floor_occluded][valid_infill].astype(np.uint8)
+            infill_norms = np.tile(np.array([[0.0, 1.0, 0.0]], dtype=np.float32), (len(infill_pts), 1))
+            infill_edge = np.zeros(len(infill_pts), dtype=bool)
+
+            all_points.append(infill_pts)
+            all_colors.append(infill_cols)
+            all_normals.append(infill_norms)
+            all_edges.append(infill_edge)
+            logger.info(f"Synthesized {len(infill_pts):,} inpainted ground floor splats under occluded furniture.")
+
+    # 8. Volumetric Backing: add solid back-facing surfels to foreground furniture
+    if fg_count > 0:
+        fg_bool = fg_mask > 0
+        fg_pts = P[fg_bool]
+        fg_rays = rays[fg_bool]
+        fg_d = d_final[fg_bool]
+        fg_norms = normals_final[fg_bool]
+        fg_cols = img_rgb[fg_bool]
+
+        thickness = np.clip(fg_d * 0.04, 0.03, 0.12)[:, np.newaxis]
+        back_pts = (fg_pts - fg_rays * thickness).astype(np.float32)
+        back_norms = (-fg_norms).astype(np.float32)
+        back_cols = (fg_cols.astype(np.float32) * 0.78).astype(np.uint8)
+        back_edge = np.zeros(len(back_pts), dtype=bool)
+
+        all_points.append(back_pts)
+        all_colors.append(back_cols)
+        all_normals.append(back_norms)
+        all_edges.append(back_edge)
+        logger.info(f"Added {len(back_pts):,} solid volumetric back-facing surfels to furniture.")
+
+    flat_points = np.concatenate(all_points, axis=0)
+    flat_colors = np.concatenate(all_colors, axis=0)
+    flat_normals = np.concatenate(all_normals, axis=0)
+    flat_edge_mask = np.concatenate(all_edges, axis=0)
 
     point_cloud = PointCloud(
         points=flat_points,
@@ -278,12 +347,13 @@ def reconstruct_layout_panorama(
             "edge_pixel_count": int(edge_count),
             "edge_pixel_ratio": float(edge_count / (H * W)),
             "edge_mask": flat_edge_mask,
+            "infilled_points": int(len(flat_points) - H * W),
         },
     )
 
-    logger.info(f"Reconstructed {point_cloud.num_points:,} 3D points from metric depth.")
+    logger.info(f"Reconstructed {point_cloud.num_points:,} total solid 3D points from metric depth & inpainting.")
 
-    # 7. Export PLY if output path provided
+    # 9. Export PLY if output path provided
     if output_ply is not None:
         write_point_cloud_ply(
             output_ply,

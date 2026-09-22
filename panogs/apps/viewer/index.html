@@ -436,6 +436,7 @@
         <div class="key-hint"><kbd>Space</kbd> Jump</div>
         <div class="key-hint"><kbd>C</kbd> Crouch</div>
         <div class="key-hint"><kbd>Shift</kbd> Sprint</div>
+        <div class="key-hint"><kbd>V</kbd> Toggle Collision</div>
         <div class="key-hint"><kbd>ESC</kbd> Unlock Mouse</div>
     </div>
 
@@ -497,9 +498,24 @@
         let lastSortedYaw = -999;
         let lastSortedPitch = -999;
 
+        function toggleCollision() {
+            collisionEnabled = !collisionEnabled;
+            const btn = document.getElementById("btn-toggle-collision");
+            if (btn) {
+                btn.classList.toggle("active", collisionEnabled);
+                btn.textContent = collisionEnabled ? "🛡️ Walk & Collision (ON)" : "🕊️ Free Fly Mode (OFF)";
+            }
+        }
+
         // Key states
         const keysDown = {};
-        window.addEventListener("keydown", e => { keysDown[e.key.toLowerCase()] = true; });
+        window.addEventListener("keydown", e => {
+            const k = e.key.toLowerCase();
+            keysDown[k] = true;
+            if (k === "v") {
+                toggleCollision();
+            }
+        });
         window.addEventListener("keyup", e => { keysDown[e.key.toLowerCase()] = false; });
 
         // Pointer Lock
@@ -860,7 +876,7 @@
             updateCamPosHUD();
         }
 
-        // Spatial Collision Grid & Ground Snapping Engine
+        // Spatial Collision Grid & Physical Sliding Engine
         let collisionEnabled = true;
         let floorY = -1.4;
         let eyeHeight = 1.6;
@@ -869,6 +885,8 @@
         let isGrounded = true;
         let obstacleCells = new Set();
         const GRID_CELL = 0.25;
+        const SPAWN_CLEAR_RADIUS = 1.2;
+        const MIN_POINTS_FOR_SOLID = 12;
 
         function buildObstacleGrid(positions, num) {
             obstacleCells.clear();
@@ -884,26 +902,45 @@
             const p05Idx = Math.floor(yVals.length * 0.05);
             floorY = yVals[p05Idx];
 
-            // Obstacles: splats between floor + 0.35m and floor + 1.8m (tables, chairs, sofa backs, pillars, walls)
-            const obsMinY = floorY + 0.35;
-            const obsMaxY = floorY + 1.8;
+            // Obstacles: solid splats between floor + 0.45m and floor + 1.85m (tables, chairs, sofa backs, pillars, walls)
+            const obsMinY = floorY + 0.45;
+            const obsMaxY = floorY + 1.85;
 
+            // Count point density per horizontal cell
+            const cellCounts = new Map();
             for (let i = 0; i < num; i++) {
                 const y = positions[i * 3 + 1];
                 if (y >= obsMinY && y <= obsMaxY) {
                     const x = positions[i * 3 + 0];
                     const z = positions[i * 3 + 2];
+                    
+                    // Exclude guaranteed spawn clearance zone around origin (0, 0)
+                    if (x * x + z * z < SPAWN_CLEAR_RADIUS * SPAWN_CLEAR_RADIUS) {
+                        continue;
+                    }
+
                     const gx = Math.floor(x / GRID_CELL);
                     const gz = Math.floor(z / GRID_CELL);
-                    obstacleCells.add(`${gx},${gz}`);
+                    const key = `${gx},${gz}`;
+                    cellCounts.set(key, (cellCounts.get(key) || 0) + 1);
+                }
+            }
+
+            // Only mark dense solid clusters as physical obstacles
+            for (const [key, count] of cellCounts.entries()) {
+                if (count >= MIN_POINTS_FOR_SOLID) {
+                    obstacleCells.add(key);
                 }
             }
         }
 
-        function isObstacleAt(x, z, radius) {
-            const radCells = Math.ceil(radius / GRID_CELL);
+        function findNearestObstacle(x, z, checkRadius) {
+            const radCells = Math.ceil(checkRadius / GRID_CELL);
             const centerGx = Math.floor(x / GRID_CELL);
             const centerGz = Math.floor(z / GRID_CELL);
+
+            let closestDistSq = Infinity;
+            let closestObs = null;
 
             for (let dx = -radCells; dx <= radCells; dx++) {
                 for (let dz = -radCells; dz <= radCells; dz++) {
@@ -912,40 +949,59 @@
                         const cellCenterX = (centerGx + dx + 0.5) * GRID_CELL;
                         const cellCenterZ = (centerGz + dz + 0.5) * GRID_CELL;
                         const distSq = (x - cellCenterX) ** 2 + (z - cellCenterZ) ** 2;
-                        if (distSq < (radius + GRID_CELL * 0.4) ** 2) {
-                            return true;
+                        if (distSq < closestDistSq) {
+                            closestDistSq = distSq;
+                            closestObs = { x: cellCenterX, z: cellCenterZ, dist: Math.sqrt(distSq) };
                         }
                     }
                 }
             }
-            return false;
+            return closestObs;
         }
 
         function resolveMovement(curX, curZ, dx, dz, radius) {
-            if (!collisionEnabled || obstacleCells.size === 0) {
+            if (!collisionEnabled || obstacleCells.size === 0 || (dx === 0 && dz === 0)) {
                 return [curX + dx, curZ + dz];
             }
 
-            const targetX = curX + dx;
-            const targetZ = curZ + dz;
+            const checkRad = radius + GRID_CELL * 0.75;
+            let effDx = dx;
+            let effDz = dz;
 
-            // 1. Full move test
-            if (!isObstacleAt(targetX, targetZ, radius)) {
-                return [targetX, targetZ];
+            // Check obstacle near target position
+            const targetX = curX + effDx;
+            const targetZ = curZ + effDz;
+            const obs = findNearestObstacle(targetX, targetZ, checkRad);
+
+            if (obs && obs.dist < checkRad) {
+                // Outward normal from obstacle center to player
+                let nx = targetX - obs.x;
+                let nz = targetZ - obs.z;
+                const len = Math.hypot(nx, nz);
+
+                if (len > 1e-4) {
+                    nx /= len;
+                    nz /= len;
+
+                    // Projection of movement vector onto obstacle normal
+                    const dot = effDx * nx + effDz * nz;
+
+                    // If moving into the obstacle, subtract normal component for smooth tangent slide
+                    if (dot < 0) {
+                        effDx -= dot * nx;
+                        effDz -= dot * nz;
+                    }
+
+                    // Push-out penetration resolution if too close
+                    const penetration = checkRad - obs.dist;
+                    if (penetration > 0) {
+                        effDx += nx * Math.min(penetration * 0.4, 0.05);
+                        effDz += nz * Math.min(penetration * 0.4, 0.05);
+                    }
+                }
             }
 
-            // 2. Slide along X axis only
-            if (!isObstacleAt(targetX, curZ, radius)) {
-                return [targetX, curZ];
-            }
-
-            // 3. Slide along Z axis only
-            if (!isObstacleAt(curX, targetZ, radius)) {
-                return [curX, targetZ];
-            }
-
-            // 4. Blocked in all directions: slide smoothly along tangent
-            return [curX, curZ];
+            return [curX + effDx, curZ + effDz];
         }
 
         async function loadSceneFile(url) {
@@ -977,12 +1033,7 @@
         });
 
         // Navigation Modes & Collision Toggle
-        document.getElementById("btn-toggle-collision").onclick = () => {
-            collisionEnabled = !collisionEnabled;
-            const btn = document.getElementById("btn-toggle-collision");
-            btn.classList.toggle("active", collisionEnabled);
-            btn.textContent = collisionEnabled ? "🛡️ Walk & Collision (ON)" : "🕊️ Free Fly Mode (OFF)";
-        };
+        document.getElementById("btn-toggle-collision").onclick = toggleCollision;
 
         document.getElementById("btn-mode-inside").onclick = () => {
             navigationMode = "inside";

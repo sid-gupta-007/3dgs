@@ -62,27 +62,20 @@ def initialize_from_pointcloud(
     scale_multiplier: float = 1.0,
     min_scale: float = 1e-4,
     max_scale: float = 10.0,
+    splat_shape: str = "hybrid",
 ) -> GaussianModel:
     """
     Initialize a 3D Gaussian Splatting scene model from a PointCloud.
 
     - Positions: Directly set from point cloud XYZ.
-    - Scales: Anisotropic surfel scales (sx, sy, sz) covering local 8-neighborhood
-              with tangential overlap to prevent slits/gaps.
+    - Scales: Geometric anisotropic shapes:
+        * 'hybrid': Planar surfel discs for flat walls/floor + pointy cylindrical needles for pillars/edges.
+        * 'cylindrical' / 'needle': Pointy cylindrical elongated splats along surface tangents.
+        * 'surfel': Flat planar discs tangent to surface normals.
+        * 'isotropic': Classic spherical Gaussians.
     - Rotations: Quaternions aligned to surface normals (or identity if normals absent).
     - Opacity: Initialized to default_opacity in logit space.
     - Colors: RGB [0, 255] converted to float [0, 1] and mapped to zeroth-order spherical harmonics (SH0).
-
-    Args:
-        point_cloud: Input PointCloud.
-        default_opacity: Initial opacity value in (0.0, 1.0) (default: 0.92).
-        k_scale_neighbors: Number of nearest neighbors to query for adaptive scale (default: 8).
-        scale_multiplier: Global scale multiplier (default: 1.0).
-        min_scale: Minimum scale clamp in meters (default: 1e-4).
-        max_scale: Maximum scale clamp in meters (default: 10.0).
-
-    Returns:
-        GaussianModel: Initialized 3D Gaussian model.
     """
     logger = get_logger("gaussian.init")
     N = point_cloud.num_points
@@ -90,13 +83,13 @@ def initialize_from_pointcloud(
     if N == 0:
         raise ValueError("Cannot initialize GaussianModel from an empty PointCloud.")
 
-    logger.info(f"Initializing {N:,} 3D Gaussians from point cloud...")
+    logger.info(f"Initializing {N:,} 3D Gaussians (shape='{splat_shape}') from point cloud...")
 
     # 1. Positions: (N, 3)
     xyz = point_cloud.points.copy()
 
-    # 2. Adaptive Scales covering 8-neighborhood (latitude + longitude + diagonals)
-    logger.info(f"Computing adaptive scales using k={k_scale_neighbors} nearest neighbors...")
+    # 2. Adaptive Scales with k-NN and Angular Ray Footprint Capping
+    logger.info(f"Computing adaptive scales for {N:,} points...")
     tree = cKDTree(xyz)
     k_query = min(k_scale_neighbors + 1, N)
     distances, _ = tree.query(xyz, k=k_query)
@@ -111,9 +104,18 @@ def initialize_from_pointcloud(
     base_scales[base_scales <= 0.0] = 0.01
     adaptive_scales = np.clip(base_scales, min_scale, max_scale).astype(np.float32)
 
+    # For structured panorama point clouds: cap scale by ray angular footprint to prevent blur across depth steps
+    if point_cloud.metadata and "total_pixels" in point_cloud.metadata:
+        point_depths = np.linalg.norm(xyz, axis=-1)
+        total_pixels = point_cloud.metadata["total_pixels"]
+        angular_pixel = (2.0 * np.pi) / max(1, int(np.sqrt(total_pixels) * 2))
+        max_angular_scale = point_depths * angular_pixel * 1.05 * scale_multiplier
+        adaptive_scales = np.minimum(adaptive_scales, np.maximum(max_angular_scale, min_scale).astype(np.float32))
+
     # 3. Orientations and Anisotropic Scales from Surface Normals
-    if point_cloud.normals is not None and len(point_cloud.normals) == N:
-        logger.info("Aligning 3D Gaussian orientations and tangential scales with surface normals...")
+    shape_mode = splat_shape.lower().strip()
+    if point_cloud.normals is not None and len(point_cloud.normals) == N and shape_mode != "isotropic":
+        logger.info(f"Aligning 3D Gaussian orientations and '{shape_mode}' scales with surface normals...")
         normals = point_cloud.normals.astype(np.float32)
         norms = np.linalg.norm(normals, axis=-1, keepdims=True)
         norms[norms == 0] = 1.0
@@ -139,33 +141,30 @@ def initialize_from_pointcloud(
         R = np.stack([t1, t2, normals], axis=-1)
         rotation_quats = rotation_matrix_to_quaternion(R)
 
-        # Anisotropic scales: sx, sy are tangential to surface with smooth overlap,
-        # sz is surfel thickness (0.35x) to maintain solid visibility from all angles
-        sx = adaptive_scales * 1.2
-        sy = adaptive_scales * 1.2
-        sz = np.clip(adaptive_scales * 0.35, min_scale, max_scale)
-
-        # Edge-aware scale adjustment: at depth discontinuity edges,
-        # force thin billboard-like scales to prevent stretching across the gap
         edge_mask = point_cloud.metadata.get("edge_mask", None) if point_cloud.metadata else None
-        if edge_mask is not None and len(edge_mask) == N:
-            edge_idx = np.asarray(edge_mask, dtype=bool)
-            edge_count = np.count_nonzero(edge_idx)
-            if edge_count > 0:
-                logger.info(f"Applying thin billboard scales to {edge_count:,} depth-edge Gaussians...")
-                # At edges: keep tangential extent but make very thin
-                # This creates card-like splats that don't bleed into the depth gap
-                sz[edge_idx] = np.clip(adaptive_scales[edge_idx] * 0.08, min_scale, max_scale)
+        is_edge = np.asarray(edge_mask, dtype=bool) if (edge_mask is not None and len(edge_mask) == N) else np.zeros(N, dtype=bool)
 
-        # Depth-based scale capping: no splat can be wider than ~2 angular pixels at its depth
-        # This prevents distant wall splats from being enormous blobs
-        point_depths = np.linalg.norm(xyz, axis=-1)
-        total_pixels = point_cloud.metadata.get("total_pixels", N) if point_cloud.metadata else N
-        angular_pixel = (2.0 * np.pi) / max(1, int(np.sqrt(total_pixels) * 2))
-        max_angular_scale = point_depths * angular_pixel * 2.0
-        max_angular_scale = np.maximum(max_angular_scale, min_scale)
-        sx = np.minimum(sx, max_angular_scale)
-        sy = np.minimum(sy, max_angular_scale)
+        if shape_mode in ("cylindrical", "needle", "pointy"):
+            # Needle / Cylindrical splats: elongated along tangent t1, tight along t2 and normal
+            sx = adaptive_scales * 1.80
+            sy = np.clip(adaptive_scales * 0.35, min_scale, max_scale)
+            sz = np.clip(adaptive_scales * 0.12, min_scale, max_scale)
+        elif shape_mode == "surfel":
+            # Flat planar surfel discs
+            sx = adaptive_scales * 1.05
+            sy = adaptive_scales * 1.05
+            sz = np.clip(adaptive_scales * 0.12, min_scale, max_scale)
+        else:
+            # Hybrid: surfel discs for flat walls/floors + pointy cylindrical needles for pillars/edges
+            sx = adaptive_scales * 1.02
+            sy = adaptive_scales * 1.02
+            sz = np.clip(adaptive_scales * 0.15, min_scale, max_scale)
+
+            # Pointy cylindrical needles at edge contours and pillars
+            if np.any(is_edge):
+                sx[is_edge] = adaptive_scales[is_edge] * 1.60
+                sy[is_edge] = np.clip(adaptive_scales[is_edge] * 0.30, min_scale, max_scale)
+                sz[is_edge] = np.clip(adaptive_scales[is_edge] * 0.05, min_scale, max_scale)
 
         scales = np.stack([sx, sy, sz], axis=-1).astype(np.float32)
     else:

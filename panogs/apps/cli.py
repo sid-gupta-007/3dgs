@@ -270,6 +270,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Voxel grid downsampling size in meters (default: 0.03m)",
     )
     video_parser.add_argument(
+        "--shape",
+        type=str,
+        default="hybrid",
+        choices=["hybrid", "cylindrical", "needle", "surfel", "isotropic"],
+        help="Geometric shape of 3D Gaussians: 'hybrid', 'cylindrical' / 'needle', 'surfel', or 'isotropic' (default: hybrid)",
+    )
+    video_parser.add_argument(
         "--splat",
         action="store_true",
         default=True,
@@ -342,6 +349,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help="Multiplier on adaptive k-NN spacing (default: 1.0)",
+    )
+    gauss_parser.add_argument(
+        "--shape",
+        type=str,
+        default="hybrid",
+        choices=["hybrid", "cylindrical", "needle", "surfel", "isotropic"],
+        help="Geometric shape of 3D Gaussians: 'hybrid' (surfel walls + pointy needle edges), 'cylindrical' / 'needle', 'surfel' (planar discs), or 'isotropic' (spheres) (default: hybrid)",
     )
     gauss_parser.add_argument(
         "--splat",
@@ -654,8 +668,9 @@ def handle_video(args: argparse.Namespace) -> int:
         if getattr(args, "splat", True):
             splat_path = output_path.with_suffix(".splat")
             gauss_path = output_path.with_name(f"{output_path.stem}_gaussians.ply")
-            logger.info("Initializing 3D Gaussians from video point cloud...")
-            model = initialize_from_pointcloud(pc)
+            shape = getattr(args, "shape", "hybrid")
+            logger.info(f"Initializing 3D Gaussians (shape: {shape}) from video point cloud...")
+            model = initialize_from_pointcloud(pc, splat_shape=shape)
             save_gaussian_ply(gauss_path, model)
             save_gaussian_splat(splat_path, model)
             print(f"  3DGS PLY:        {gauss_path} ({model.num_gaussians:,} Gaussians)")
@@ -731,6 +746,7 @@ def handle_init_gaussians(args: argparse.Namespace) -> int:
             point_cloud=pc,
             default_opacity=args.opacity,
             scale_multiplier=args.scale_factor,
+            splat_shape=getattr(args, "shape", "hybrid"),
         )
 
         save_gaussian_ply(output_path, model)
