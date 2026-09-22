@@ -3,10 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PanoGS 3D Gaussian Splatting Explorer</title>
+    <title>PanoGS 3D Gaussian Splatting Explorer (Three.js)</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <style>
         :root {
             --bg-base: #0a0b10;
@@ -44,12 +46,6 @@
             position: absolute;
             top: 0;
             left: 0;
-        }
-
-        canvas {
-            width: 100%;
-            height: 100%;
-            display: block;
         }
 
         /* Glassmorphic Overlays */
@@ -149,7 +145,7 @@
             position: absolute;
             top: 85px;
             left: 20px;
-            width: 300px;
+            width: 310px;
             padding: 18px;
             display: flex;
             flex-direction: column;
@@ -330,9 +326,7 @@
     </style>
 </head>
 <body>
-    <div id="canvas-container">
-        <canvas id="glcanvas"></canvas>
-    </div>
+    <div id="canvas-container"></div>
 
     <!-- Drop Zone -->
     <div id="drop-overlay">Drop .splat or .ply file here to view</div>
@@ -345,7 +339,7 @@
                 <h1>PanoGS Explorer</h1>
             </div>
         </div>
-        <div class="badge" id="view-mode-badge">Inside 360 View</div>
+        <div class="badge" id="view-mode-badge">Three.js Engine</div>
     </header>
 
     <!-- Stats HUD -->
@@ -362,14 +356,33 @@
             <span class="stat-label">Camera</span>
             <span class="stat-val" id="cam-pos-val">0.0, 0.0, 0.0</span>
         </div>
+        <div class="stat-item" id="pointer-lock-item" style="display: none;">
+            <span class="stat-label">Control</span>
+            <span class="stat-val" style="color: #4ade80;">FPS LOCKED</span>
+        </div>
     </div>
 
     <!-- Controls Panel -->
     <div class="controls-panel glass-panel">
         <div class="section-title">Navigation Mode</div>
-        <div class="btn-group">
-            <button id="btn-mode-inside" class="active">Inside 360 Room</button>
+        <div class="btn-group" style="grid-template-columns: 1fr;">
+            <button id="btn-lock-fps">🔒 Enter FPS View (Click Viewport)</button>
+        </div>
+        <div class="btn-group" style="margin-top: 6px;">
+            <button id="btn-mode-inside" class="active">Inside Room</button>
             <button id="btn-mode-orbit">Outside Orbit</button>
+        </div>
+        <div class="btn-group" style="margin-top: 6px; grid-template-columns: 1fr;">
+            <button id="btn-toggle-collision" class="active">🛡️ Walk & Collision (ON)</button>
+        </div>
+
+        <div class="section-title" style="margin-top: 6px;">Movement & Speed</div>
+        <div class="control-group">
+            <div class="label-row">
+                <span>Move Speed</span>
+                <span class="val" id="speed-label">1.0x</span>
+            </div>
+            <input type="range" id="speed-slider" min="0.2" max="3.0" step="0.1" value="1.0">
         </div>
 
         <div class="section-title" style="margin-top: 6px;">Viewport Settings</div>
@@ -379,7 +392,7 @@
                 <span>Splat Scale</span>
                 <span class="val" id="scale-label">1.0x</span>
             </div>
-            <input type="range" id="scale-slider" min="0.1" max="4.0" step="0.05" value="1.0">
+            <input type="range" id="scale-slider" min="0.1" max="3.0" step="0.05" value="1.0">
         </div>
 
         <div class="control-group">
@@ -406,318 +419,342 @@
             <button id="bg-blue">Deep Space</button>
         </div>
 
-        <div class="section-title" style="margin-top: 6px;">Actions</div>
+        <div class="section-title" style="margin-top: 6px;">Helpers & Actions</div>
         <div class="btn-group">
-            <button id="btn-center">Center in Room</button>
-            <button id="btn-snap">Capture Snapshot</button>
+            <button id="btn-grid">Toggle Grid Floor</button>
+            <button id="btn-center">Center Room</button>
+        </div>
+        <div class="btn-group" style="margin-top: 6px; grid-template-columns: 1fr;">
+            <button id="btn-snap">Capture High-Res Snapshot</button>
         </div>
     </div>
 
     <!-- Bottom Help Bar -->
     <div class="bottom-bar glass-panel">
-        <div class="key-hint"><kbd>Left Drag</kbd> <span id="help-drag">Look Around 360°</span></div>
-        <div class="key-hint"><kbd>W A S D</kbd> Walk Inside Room</div>
-        <div class="key-hint"><kbd>Wheel</kbd> Zoom / Move</div>
+        <div class="key-hint"><kbd>Viewport Click</kbd> <span>Lock Mouse FPS</span></div>
+        <div class="key-hint"><kbd>W A S D</kbd> Walk & Slide Around Obstacles</div>
+        <div class="key-hint"><kbd>Space</kbd> Jump</div>
+        <div class="key-hint"><kbd>C</kbd> Crouch</div>
+        <div class="key-hint"><kbd>Shift</kbd> Sprint</div>
+        <div class="key-hint"><kbd>ESC</kbd> Unlock Mouse</div>
     </div>
 
     <!-- Loading Spinner -->
     <div id="loader">
         <div class="spinner"></div>
-        <p style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">Loading 3D Gaussian Splats...</p>
+        <p style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">Loading 3D Gaussian Splats via Three.js...</p>
     </div>
 
     <script>
-        // WebGL Splat Viewer Engine
-        const canvas = document.getElementById("glcanvas");
-        const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
-        if (!gl) {
-            alert("WebGL 2.0 is required to view 3D Gaussian Splats.");
-        }
+        // Three.js Gaussian Splatting Engine
+        const container = document.getElementById("canvas-container");
 
+        // 1. Scene & Renderer Setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a0b10);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 100);
+        camera.position.set(0, 0, 0.01);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        // Grid helper
+        const gridHelper = new THREE.GridHelper(10, 20, 0x6366f1, 0x222538);
+        gridHelper.position.y = -1.5;
+        gridHelper.visible = false;
+        scene.add(gridHelper);
+
+        // OrbitControls
+        const orbitControls = new THREE.OrbitControls(camera, renderer.domElement);
+        orbitControls.enableDamping = true;
+        orbitControls.dampingFactor = 0.05;
+        orbitControls.target.set(0, 0, 0);
+        orbitControls.enabled = false;
+
+        let navigationMode = "inside"; // "inside" or "orbit"
+        let isPointerLocked = false;
         let numGaussians = 0;
-        let splatBuffer = null;
+        let splatMesh = null;
+        let splatGeometry = null;
 
-        // Navigation Modes: "inside" (first-person 360 look-around) or "orbit" (outside orbit)
-        let navigationMode = "inside";
-
-        // Camera State
-        let cameraPos = [0.0, 0.0, 0.0];      // Inside camera position
-        let cameraYaw = 0.0;                  // Horizontal angle in degrees
-        let cameraPitch = 0.0;                // Vertical angle in degrees
-        let orbitDistance = 4.0;              // Distance when in orbit mode
-        let fov = 75.0;
-        let splatScaleMultiplier = 1.0;
+        let splatScaleMult = 1.0;
         let minAlphaCutoff = 0.01;
-        let bgColor = [0.039, 0.043, 0.063, 1.0];
+        let moveSpeedMult = 1.0;
 
-        let isDragging = false;
-        let lastMouseX = 0;
-        let lastMouseY = 0;
+        let cameraYaw = 0.0;
+        let cameraPitch = 0.0;
+        let cameraPos = [0.0, 0.0, 0.0];
 
-        // FPS tracking
-        let lastTime = performance.now();
-        let frameCount = 0;
+        // Raw Buffers for Radix Depth Sorting
+        let rawSplatBytes = null;
+        let rawPositions = null;
+        let sortedSplatBytes = null;
+        let sortDepths = null;
+        let lastSortedEye = [0, 0, 0];
+        let lastSortedYaw = -999;
+        let lastSortedPitch = -999;
 
-        function resizeCanvas() {
-            canvas.width = window.innerWidth * window.devicePixelRatio;
-            canvas.height = window.innerHeight * window.devicePixelRatio;
-            gl.viewport(0, 0, canvas.width, canvas.height);
-        }
-        window.addEventListener("resize", resizeCanvas);
-        resizeCanvas();
+        // Key states
+        const keysDown = {};
+        window.addEventListener("keydown", e => { keysDown[e.key.toLowerCase()] = true; });
+        window.addEventListener("keyup", e => { keysDown[e.key.toLowerCase()] = false; });
 
-        // Vertex Shader: Real-Time 3D Gaussian Projective Rasterizer
-        const vsSource = `#version 300 es
-        precision highp float;
+        // Pointer Lock
+        const canvas = renderer.domElement;
+        canvas.addEventListener("click", () => {
+            if (navigationMode === "inside") {
+                canvas.requestPointerLock();
+            }
+        });
 
-        layout(location = 0) in vec3 a_position;
-        layout(location = 1) in vec3 a_scale;
-        layout(location = 2) in vec4 a_color;
-        layout(location = 3) in vec4 a_quat;
-        layout(location = 4) in vec2 a_quad_pos; // quad corner [-1, 1]
+        document.getElementById("btn-lock-fps").onclick = () => {
+            canvas.requestPointerLock();
+        };
 
-        uniform mat4 u_view;
-        uniform mat4 u_projection;
-        uniform vec2 u_viewport;
-        uniform float u_scale_mult;
-        uniform float u_focal;
+        document.addEventListener("pointerlockchange", () => {
+            isPointerLocked = document.pointerLockElement === canvas;
+            document.getElementById("pointer-lock-item").style.display = isPointerLocked ? "flex" : "none";
+        });
 
-        out vec4 v_color;
-        out vec3 v_conic;
-        out vec2 v_screen_offset;
+        document.addEventListener("mousemove", e => {
+            if (isPointerLocked && navigationMode === "inside") {
+                const sensitivity = 0.15;
+                cameraYaw += e.movementX * sensitivity;
+                cameraPitch = Math.max(-89, Math.min(89, cameraPitch - e.movementY * sensitivity));
+            }
+        });
 
-        mat3 quatToMat3(vec4 q) {
-            float qw = q.x;
-            float qx = q.y;
-            float qy = q.z;
-            float qz = q.w;
-            return mat3(
-                1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy + qw * qz), 2.0 * (qx * qz - qw * qy),
-                2.0 * (qx * qy - qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz + qw * qx),
-                2.0 * (qx * qz + qw * qy), 2.0 * (qy * qz - qw * qx), 1.0 - 2.0 * (qx * qx + qy * qy)
-            );
-        }
+        // Vertex Shader: Projected 2D Gaussian Ellipse
+        const vsSource = `
+            attribute vec3 a_position;
+            attribute vec3 a_scale;
+            attribute vec4 a_color;
+            attribute vec4 a_quat;
 
-        void main() {
-            v_color = a_color;
+            uniform float u_scale_mult;
+            uniform float u_focal;
+            uniform vec2 u_viewport;
 
-            // Transform position to camera space
-            vec4 p_cam = u_view * vec4(a_position, 1.0);
-            float z = -p_cam.z;
-            if (z <= 0.04) {
-                gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+            varying vec4 v_color;
+            varying vec3 v_conic;
+            varying vec2 v_screen_offset;
+
+            mat3 quatToMat3(vec4 q) {
+                float qw = q.x;
+                float qx = q.y;
+                float qy = q.z;
+                float qz = q.w;
+                return mat3(
+                    1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy + qw * qz), 2.0 * (qx * qz - qw * qy),
+                    2.0 * (qx * qy - qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz + qw * qx),
+                    2.0 * (qx * qz + qw * qy), 2.0 * (qy * qz - qw * qx), 1.0 - 2.0 * (qx * qx + qy * qy)
+                );
+            }
+
+            void main() {
+                v_color = a_color;
+
+                vec4 p_cam = modelViewMatrix * vec4(a_position, 1.0);
+                float z = -p_cam.z;
+                if (z <= 0.04) {
+                    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+                    return;
+                }
+
+                vec4 q = normalize(a_quat * 2.0 - 1.0);
+                mat3 R = quatToMat3(q);
+                vec3 s = a_scale * u_scale_mult;
+                mat3 S = mat3(
+                    s.x, 0.0, 0.0,
+                    0.0, s.y, 0.0,
+                    0.0, 0.0, s.z
+                );
+                mat3 M = R * S;
+                mat3 Sigma = M * transpose(M);
+
+                mat3 W = mat3(modelViewMatrix);
+
+                float fx = u_focal;
+                float fy = u_focal;
+                float z2 = z * z;
+                mat3x2 J = mat3x2(
+                    fx / z, 0.0,
+                    0.0, fy / z,
+                    -(fx * p_cam.x) / z2, -(fy * p_cam.y) / z2
+                );
+
+                mat3x2 T = J * W;
+                mat3x2 TS = T * Sigma;
+                mat2 V = TS * transpose(T);
+                V[0][0] += 0.3;
+                V[1][1] += 0.3;
+
+                float a = V[0][0];
+                float b = V[0][1];
+                float c = V[1][1];
+
+                float det = a * c - b * b;
+                if (det <= 0.0001) {
+                    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+                    return;
+                }
+
+                v_conic = vec3(c / det, -b / det, a / det);
+
+                float mid = 0.5 * (a + c);
+                float diff = 0.5 * (a - c);
+                float term = sqrt(max(0.01, diff * diff + b * b));
+                float lambda1 = mid + term;
+                float lambda2 = max(0.01, mid - term);
+
+                vec2 v1 = vec2(b, lambda1 - a);
+                float v1_len = length(v1);
+                if (v1_len < 1e-4) {
+                    v1 = vec2(1.0, 0.0);
+                } else {
+                    v1 = v1 / v1_len;
+                }
+                vec2 v2 = vec2(-v1.y, v1.x);
+
+                float r1 = min(400.0, 3.0 * sqrt(max(0.1, lambda1)));
+                float r2 = min(400.0, 3.0 * sqrt(max(0.1, lambda2)));
+
+                vec2 offset_pix = position.x * v1 * r1 + position.y * v2 * r2;
+                v_screen_offset = offset_pix;
+
+                vec4 p_clip = projectionMatrix * p_cam;
+                vec2 offset_ndc = (offset_pix / u_viewport) * 2.0;
+                p_clip.xy += offset_ndc * p_clip.w;
+
+                gl_Position = p_clip;
+            }
+        `;
+
+        // Fragment Shader: Smooth Exponential Splat Falloff
+        const fsSource = `
+            precision highp float;
+
+            varying vec4 v_color;
+            varying vec3 v_conic;
+            varying vec2 v_screen_offset;
+
+            uniform float u_min_alpha;
+
+            void main() {
+                vec2 d = v_screen_offset;
+                float power = -0.5 * (v_conic.x * d.x * d.x + 2.0 * v_conic.y * d.x * d.y + v_conic.z * d.y * d.y);
+                if (power > 0.0 || power < -4.5) {
+                    discard;
+                }
+
+                float alpha = v_color.a * exp(power);
+                if (alpha < u_min_alpha) {
+                    discard;
+                }
+
+                gl_FragColor = vec4(v_color.rgb, alpha);
+            }
+        `;
+
+        // Radix Depth Sorting
+        function updateDepthSort() {
+            if (numGaussians === 0 || !rawPositions || !splatMesh) return;
+
+            const eye = camera.position;
+            const distMoved = Math.hypot(eye.x - lastSortedEye[0], eye.y - lastSortedEye[1], eye.z - lastSortedEye[2]);
+            const angleDiff = Math.abs(cameraYaw - lastSortedYaw) + Math.abs(cameraPitch - lastSortedPitch);
+
+            if (distMoved < 0.03 && angleDiff < 0.3 && lastSortedYaw !== -999) {
                 return;
             }
 
-            // Unpack rotation quaternion and scale
-            vec4 q = normalize(a_quat * 2.0 - 1.0);
-            mat3 R = quatToMat3(q);
-            vec3 s = a_scale * u_scale_mult;
-            mat3 S = mat3(
-                s.x, 0.0, 0.0,
-                0.0, s.y, 0.0,
-                0.0, 0.0, s.z
-            );
-            mat3 M = R * S;
-            mat3 Sigma = M * transpose(M);
+            lastSortedEye = [eye.x, eye.y, eye.z];
+            lastSortedYaw = cameraYaw;
+            lastSortedPitch = cameraPitch;
 
-            // Camera view rotation W
-            mat3 W = mat3(u_view);
+            // View direction Z vector
+            const mat = camera.matrixWorldInverse.elements;
+            const vzX = mat[2];
+            const vzY = mat[6];
+            const vzZ = mat[10];
 
-            // Perspective Jacobian J (2x3)
-            float fx = u_focal;
-            float fy = u_focal;
-            float z2 = z * z;
-            mat3x2 J = mat3x2(
-                fx / z, 0.0,
-                0.0, fy / z,
-                -(fx * p_cam.x) / z2, -(fy * p_cam.y) / z2
-            );
+            let minD = Infinity;
+            let maxD = -Infinity;
 
-            // Screen covariance V = (J * W) * Sigma * (J * W)^T + 0.3 * I
-            mat3x2 T = J * W;
-            mat3x2 TS = T * Sigma;
-            mat2 V = TS * transpose(T);
-            V[0][0] += 0.3;
-            V[1][1] += 0.3;
-
-            float a = V[0][0];
-            float b = V[0][1];
-            float c = V[1][1];
-
-            float det = a * c - b * b;
-            if (det <= 0.0001) {
-                gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-                return;
+            for (let i = 0; i < numGaussians; i++) {
+                const idx = i * 3;
+                const d = vzX * rawPositions[idx] + vzY * rawPositions[idx + 1] + vzZ * rawPositions[idx + 2];
+                sortDepths[i] = d;
+                if (d < minD) minD = d;
+                if (d > maxD) maxD = d;
             }
 
-            // Inverse 2D covariance conic [c/det, -b/det, a/det]
-            v_conic = vec3(c / det, -b / det, a / det);
+            const range = Math.max(1e-4, maxD - minD);
+            const count = new Uint32Array(65536);
+            const keys = new Uint16Array(numGaussians);
 
-            // Eigenvalues of 2D screen ellipse
-            float mid = 0.5 * (a + c);
-            float diff = 0.5 * (a - c);
-            float term = sqrt(max(0.01, diff * diff + b * b));
-            float lambda1 = mid + term;
-            float lambda2 = max(0.01, mid - term);
-
-            // Major and minor axis vectors
-            vec2 v1 = vec2(b, lambda1 - a);
-            float v1_len = length(v1);
-            if (v1_len < 1e-4) {
-                v1 = vec2(1.0, 0.0);
-            } else {
-                v1 = v1 / v1_len;
-            }
-            vec2 v2 = vec2(-v1.y, v1.x);
-
-            float r1 = min(400.0, 3.0 * sqrt(max(0.1, lambda1)));
-            float r2 = min(400.0, 3.0 * sqrt(max(0.1, lambda2)));
-
-            vec2 offset_pix = a_quad_pos.x * v1 * r1 + a_quad_pos.y * v2 * r2;
-            v_screen_offset = offset_pix;
-
-            vec4 p_clip = u_projection * p_cam;
-            vec2 offset_ndc = (offset_pix / u_viewport) * 2.0;
-            p_clip.xy += offset_ndc * p_clip.w;
-
-            gl_Position = p_clip;
-        }
-        `;
-
-        // Fragment Shader: Exact 2D Gaussian Elliptical Decay
-        const fsSource = `#version 300 es
-        precision highp float;
-
-        in vec4 v_color;
-        in vec3 v_conic;
-        in vec2 v_screen_offset;
-
-        uniform float u_min_alpha;
-        out vec4 fragColor;
-
-        void main() {
-            vec2 d = v_screen_offset;
-            float power = -0.5 * (v_conic.x * d.x * d.x + 2.0 * v_conic.y * d.x * d.y + v_conic.z * d.y * d.y);
-            if (power > 0.0 || power < -4.5) {
-                discard;
+            // Furthest distance gets smallest key -> back-to-front rendering
+            for (let i = 0; i < numGaussians; i++) {
+                const k = Math.min(65535, Math.max(0, Math.floor(((maxD - sortDepths[i]) / range) * 65535)));
+                keys[i] = k;
+                count[k]++;
             }
 
-            float alpha = v_color.a * exp(power);
-            if (alpha < u_min_alpha) {
-                discard;
+            const starts = new Uint32Array(65536);
+            let sum = 0;
+            for (let i = 0; i < 65536; i++) {
+                starts[i] = sum;
+                sum += count[i];
             }
 
-            fragColor = vec4(v_color.rgb, alpha);
-        }
-        `;
-
-        function createShader(gl, type, source) {
-            const shader = gl.createShader(type);
-            gl.shaderSource(shader, source);
-            gl.compileShader(shader);
-            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-                console.error(gl.getShaderInfoLog(shader));
-                gl.deleteShader(shader);
-                return null;
+            const sortedIndices = new Int32Array(numGaussians);
+            for (let i = 0; i < numGaussians; i++) {
+                const k = keys[i];
+                sortedIndices[starts[k]++] = i;
             }
-            return shader;
-        }
 
-        const vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
-        const fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
-        const program = gl.createProgram();
-        gl.attachShader(program, vs);
-        gl.attachShader(program, fs);
-        gl.linkProgram(program);
+            const srcU32 = new Uint32Array(rawSplatBytes.buffer);
+            const dstU32 = new Uint32Array(sortedSplatBytes.buffer);
 
-        // Uniform locations
-        const uView = gl.getUniformLocation(program, "u_view");
-        const uProj = gl.getUniformLocation(program, "u_projection");
-        const uViewport = gl.getUniformLocation(program, "u_viewport");
-        const uScaleMult = gl.getUniformLocation(program, "u_scale_mult");
-        const uFocal = gl.getUniformLocation(program, "u_focal");
-        const uMinAlpha = gl.getUniformLocation(program, "u_min_alpha");
+            for (let i = 0; i < numGaussians; i++) {
+                const srcOffset = sortedIndices[i] * 8;
+                const dstOffset = i * 8;
+                dstU32[dstOffset]     = srcU32[srcOffset];
+                dstU32[dstOffset + 1] = srcU32[srcOffset + 1];
+                dstU32[dstOffset + 2] = srcU32[srcOffset + 2];
+                dstU32[dstOffset + 3] = srcU32[srcOffset + 3];
+                dstU32[dstOffset + 4] = srcU32[srcOffset + 4];
+                dstU32[dstOffset + 5] = srcU32[srcOffset + 5];
+                dstU32[dstOffset + 6] = srcU32[srcOffset + 6];
+                dstU32[dstOffset + 7] = srcU32[srcOffset + 7];
+            }
 
-        // Quad geometry for instancing
-        const quadData = new Float32Array([
-            -1.0, -1.0,
-             1.0, -1.0,
-            -1.0,  1.0,
-             1.0,  1.0,
-        ]);
-        const quadBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, quadData, gl.STATIC_DRAW);
+            // Update Three.js Instanced Attributes
+            const attrPos = splatGeometry.getAttribute("a_position");
+            const attrScale = splatGeometry.getAttribute("a_scale");
+            const attrColor = splatGeometry.getAttribute("a_color");
+            const attrQuat = splatGeometry.getAttribute("a_quat");
 
-        const vao = gl.createVertexArray();
-        gl.bindVertexArray(vao);
+            const sortedF32 = new Float32Array(sortedSplatBytes.buffer);
+            const sortedU8 = new Uint8Array(sortedSplatBytes.buffer);
 
-        // Attribute 4: quad coords (per vertex, 4 vertices)
-        gl.enableVertexAttribArray(4);
-        gl.vertexAttribPointer(4, 2, gl.FLOAT, false, 0, 0);
+            for (let i = 0; i < numGaussians; i++) {
+                const baseF32 = i * 8;
+                const baseU8 = i * 32;
 
-        // Splat data instance buffer
-        splatBuffer = gl.createBuffer();
+                attrPos.setXYZ(i, sortedF32[baseF32], sortedF32[baseF32 + 1], sortedF32[baseF32 + 2]);
+                attrScale.setXYZ(i, sortedF32[baseF32 + 3], sortedF32[baseF32 + 4], sortedF32[baseF32 + 5]);
+                attrColor.setXYZW(i, sortedU8[baseU8 + 24], sortedU8[baseU8 + 25], sortedU8[baseU8 + 26], sortedU8[baseU8 + 27]);
+                attrQuat.setXYZW(i, sortedU8[baseU8 + 28], sortedU8[baseU8 + 29], sortedU8[baseU8 + 30], sortedU8[baseU8 + 31]);
+            }
 
-        function setupSplatAttributes(buffer) {
-            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-
-            // a_position (offset 0, float32 * 3 = 12 bytes)
-            gl.enableVertexAttribArray(0);
-            gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
-            gl.vertexAttribDivisor(0, 1);
-
-            // a_scale (offset 12, float32 * 3 = 12 bytes)
-            gl.enableVertexAttribArray(1);
-            gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
-            gl.vertexAttribDivisor(1, 1);
-
-            // a_color (offset 24, uint8 * 4 = 4 bytes, normalized)
-            gl.enableVertexAttribArray(2);
-            gl.vertexAttribPointer(2, 4, gl.UNSIGNED_BYTE, true, 32, 24);
-            gl.vertexAttribDivisor(2, 1);
-
-            // a_quat (offset 28, uint8 * 4 = 4 bytes, normalized)
-            gl.enableVertexAttribArray(3);
-            gl.vertexAttribPointer(3, 4, gl.UNSIGNED_BYTE, true, 32, 28);
-            gl.vertexAttribDivisor(3, 1);
-        }
-
-        // Matrix Math Helpers
-        function mat4Perspective(fovyRad, aspect, near, far) {
-            const f = 1.0 / Math.tan(fovyRad / 2.0);
-            const nf = 1.0 / (near - far);
-            return [
-                f / aspect, 0, 0, 0,
-                0, f, 0, 0,
-                0, 0, (far + near) * nf, -1,
-                0, 0, (2.0 * far * near) * nf, 0
-            ];
-        }
-
-        function mat4LookAt(eye, target, up) {
-            let zx = eye[0] - target[0], zy = eye[1] - target[1], zz = eye[2] - target[2];
-            let zlen = Math.hypot(zx, zy, zz);
-            if (zlen === 0) zlen = 1;
-            zx /= zlen; zy /= zlen; zz /= zlen;
-
-            let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
-            let xlen = Math.hypot(xx, xy, xz);
-            if (xlen === 0) xlen = 1;
-            xx /= xlen; xy /= xlen; xz /= xlen;
-
-            let yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
-
-            return [
-                xx, yx, zx, 0,
-                xy, yy, zy, 0,
-                xz, yz, zz, 0,
-                -(xx * eye[0] + xy * eye[1] + xz * eye[2]),
-                -(yx * eye[0] + yy * eye[1] + yz * eye[2]),
-                -(zx * eye[0] + zy * eye[1] + zz * eye[2]),
-                1
-            ];
+            attrPos.needsUpdate = true;
+            attrScale.needsUpdate = true;
+            attrColor.needsUpdate = true;
+            attrQuat.needsUpdate = true;
         }
 
         // Load Splat Data
@@ -728,16 +765,187 @@
             document.getElementById("splat-count").textContent = numGaussians.toLocaleString();
             document.getElementById("loader").style.opacity = "0";
 
-            gl.bindBuffer(gl.ARRAY_BUFFER, splatBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, buffer, gl.STATIC_DRAW);
+            rawSplatBytes = new Uint8Array(buffer);
+            sortedSplatBytes = new Uint8Array(buffer.byteLength);
+            sortDepths = new Float32Array(numGaussians);
 
-            setupSplatAttributes(splatBuffer);
+            const srcF32 = new Float32Array(buffer);
+            const srcU8 = new Uint8Array(buffer);
 
-            // Default position: inside at origin (0, 0, 0)
-            cameraPos = [0.0, 0.0, 0.0];
+            rawPositions = new Float32Array(numGaussians * 3);
+            for (let i = 0; i < numGaussians; i++) {
+                rawPositions[i * 3 + 0] = srcF32[i * 8 + 0];
+                rawPositions[i * 3 + 1] = srcF32[i * 8 + 1];
+                rawPositions[i * 3 + 2] = srcF32[i * 8 + 2];
+            }
+
+            // Build Spatial Collision Obstacle Grid for solid objects (tables, chairs, pillars, walls)
+            buildObstacleGrid(rawPositions, numGaussians);
+
+            // Create Three.js Instanced Buffer Geometry
+            splatGeometry = new THREE.InstancedBufferGeometry();
+
+            // Quad Vertices [-1, 1]
+            const quadPositions = new Float32Array([
+                -1.0, -1.0, 0.0,
+                 1.0, -1.0, 0.0,
+                 1.0,  1.0, 0.0,
+                -1.0,  1.0, 0.0,
+            ]);
+            const quadIndices = [0, 1, 2, 0, 2, 3];
+
+            splatGeometry.setAttribute("position", new THREE.BufferAttribute(quadPositions, 3));
+            splatGeometry.setIndex(quadIndices);
+
+            // Instanced Attributes
+            const positions = new Float32Array(numGaussians * 3);
+            const scales = new Float32Array(numGaussians * 3);
+            const colors = new Uint8Array(numGaussians * 4);
+            const quats = new Uint8Array(numGaussians * 4);
+
+            for (let i = 0; i < numGaussians; i++) {
+                const baseF32 = i * 8;
+                const baseU8 = i * 32;
+
+                positions[i * 3 + 0] = srcF32[baseF32 + 0];
+                positions[i * 3 + 1] = srcF32[baseF32 + 1];
+                positions[i * 3 + 2] = srcF32[baseF32 + 2];
+
+                scales[i * 3 + 0] = srcF32[baseF32 + 3];
+                scales[i * 3 + 1] = srcF32[baseF32 + 4];
+                scales[i * 3 + 2] = srcF32[baseF32 + 5];
+
+                colors[i * 4 + 0] = srcU8[baseU8 + 24];
+                colors[i * 4 + 1] = srcU8[baseU8 + 25];
+                colors[i * 4 + 2] = srcU8[baseU8 + 26];
+                colors[i * 4 + 3] = srcU8[baseU8 + 27];
+
+                quats[i * 4 + 0] = srcU8[baseU8 + 28];
+                quats[i * 4 + 1] = srcU8[baseU8 + 29];
+                quats[i * 4 + 2] = srcU8[baseU8 + 30];
+                quats[i * 4 + 3] = srcU8[baseU8 + 31];
+            }
+
+            splatGeometry.setAttribute("a_position", new THREE.InstancedBufferAttribute(positions, 3));
+            splatGeometry.setAttribute("a_scale", new THREE.InstancedBufferAttribute(scales, 3));
+            splatGeometry.setAttribute("a_color", new THREE.InstancedBufferAttribute(colors, 4, true));
+            splatGeometry.setAttribute("a_quat", new THREE.InstancedBufferAttribute(quats, 4, true));
+
+            const focal = (window.innerHeight / 2.0) / Math.tan((camera.fov * Math.PI) / 360.0);
+
+            const splatMaterial = new THREE.ShaderMaterial({
+                vertexShader: vsSource,
+                fragmentShader: fsSource,
+                uniforms: {
+                    u_scale_mult: { value: splatScaleMult },
+                    u_focal: { value: focal },
+                    u_viewport: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+                    u_min_alpha: { value: minAlphaCutoff },
+                },
+                transparent: true,
+                depthWrite: false,
+                depthTest: false,
+                side: THREE.DoubleSide,
+            });
+
+            if (splatMesh) scene.remove(splatMesh);
+            splatMesh = new THREE.Mesh(splatGeometry, splatMaterial);
+            splatMesh.frustumCulled = false;
+            scene.add(splatMesh);
+
+            lastSortedYaw = -999;
+            cameraPos = [0.0, floorY + eyeHeight, 0.0];
             cameraYaw = 0.0;
             cameraPitch = 0.0;
             updateCamPosHUD();
+        }
+
+        // Spatial Collision Grid & Ground Snapping Engine
+        let collisionEnabled = true;
+        let floorY = -1.4;
+        let eyeHeight = 1.6;
+        let playerRadius = 0.35;
+        let verticalVelocity = 0.0;
+        let isGrounded = true;
+        let obstacleCells = new Set();
+        const GRID_CELL = 0.25;
+
+        function buildObstacleGrid(positions, num) {
+            obstacleCells.clear();
+            if (num <= 0) return;
+
+            // Find floor Y by sampling 5th percentile of Y coordinates
+            const sampleStep = Math.max(1, Math.floor(num / 5000));
+            const yVals = [];
+            for (let i = 0; i < num; i += sampleStep) {
+                yVals.push(positions[i * 3 + 1]);
+            }
+            yVals.sort((a, b) => a - b);
+            const p05Idx = Math.floor(yVals.length * 0.05);
+            floorY = yVals[p05Idx];
+
+            // Obstacles: splats between floor + 0.35m and floor + 1.8m (tables, chairs, sofa backs, pillars, walls)
+            const obsMinY = floorY + 0.35;
+            const obsMaxY = floorY + 1.8;
+
+            for (let i = 0; i < num; i++) {
+                const y = positions[i * 3 + 1];
+                if (y >= obsMinY && y <= obsMaxY) {
+                    const x = positions[i * 3 + 0];
+                    const z = positions[i * 3 + 2];
+                    const gx = Math.floor(x / GRID_CELL);
+                    const gz = Math.floor(z / GRID_CELL);
+                    obstacleCells.add(`${gx},${gz}`);
+                }
+            }
+        }
+
+        function isObstacleAt(x, z, radius) {
+            const radCells = Math.ceil(radius / GRID_CELL);
+            const centerGx = Math.floor(x / GRID_CELL);
+            const centerGz = Math.floor(z / GRID_CELL);
+
+            for (let dx = -radCells; dx <= radCells; dx++) {
+                for (let dz = -radCells; dz <= radCells; dz++) {
+                    const key = `${centerGx + dx},${centerGz + dz}`;
+                    if (obstacleCells.has(key)) {
+                        const cellCenterX = (centerGx + dx + 0.5) * GRID_CELL;
+                        const cellCenterZ = (centerGz + dz + 0.5) * GRID_CELL;
+                        const distSq = (x - cellCenterX) ** 2 + (z - cellCenterZ) ** 2;
+                        if (distSq < (radius + GRID_CELL * 0.4) ** 2) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        function resolveMovement(curX, curZ, dx, dz, radius) {
+            if (!collisionEnabled || obstacleCells.size === 0) {
+                return [curX + dx, curZ + dz];
+            }
+
+            const targetX = curX + dx;
+            const targetZ = curZ + dz;
+
+            // 1. Full move test
+            if (!isObstacleAt(targetX, targetZ, radius)) {
+                return [targetX, targetZ];
+            }
+
+            // 2. Slide along X axis only
+            if (!isObstacleAt(targetX, curZ, radius)) {
+                return [targetX, curZ];
+            }
+
+            // 3. Slide along Z axis only
+            if (!isObstacleAt(curX, targetZ, radius)) {
+                return [curX, targetZ];
+            }
+
+            // 4. Blocked in all directions: slide smoothly along tangent
+            return [curX, curZ];
         }
 
         async function loadSceneFile(url) {
@@ -753,144 +961,105 @@
 
         function updateCamPosHUD() {
             document.getElementById("cam-pos-val").textContent = 
-                `${cameraPos[0].toFixed(1)}, ${cameraPos[1].toFixed(1)}, ${cameraPos[2].toFixed(1)}`;
+                `${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)}`;
         }
 
-        // Mouse & Interaction Listeners
-        canvas.addEventListener("contextmenu", e => e.preventDefault());
-
-        canvas.addEventListener("mousedown", e => {
-            isDragging = true;
-            lastMouseX = e.clientX;
-            lastMouseY = e.clientY;
-        });
-
-        window.addEventListener("mouseup", () => isDragging = false);
-
-        window.addEventListener("mousemove", e => {
-            if (!isDragging) return;
-            const dx = e.clientX - lastMouseX;
-            const dy = e.clientY - lastMouseY;
-            lastMouseX = e.clientX;
-            lastMouseY = e.clientY;
-
-            if (navigationMode === "inside") {
-                // First person look around: yaw & pitch
-                cameraYaw += dx * 0.35;
-                cameraPitch = Math.max(-89, Math.min(89, cameraPitch + dy * 0.35));
-            } else {
-                // Outside Orbit
-                cameraYaw += dx * 0.4;
-                cameraPitch = Math.max(-89, Math.min(89, cameraPitch + dy * 0.4));
+        // Window resize
+        window.addEventListener("resize", () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            if (splatMesh) {
+                const focal = (window.innerHeight / 2.0) / Math.tan((camera.fov * Math.PI) / 360.0);
+                splatMesh.material.uniforms.u_viewport.value.set(window.innerWidth, window.innerHeight);
+                splatMesh.material.uniforms.u_focal.value = focal;
             }
         });
 
-        canvas.addEventListener("wheel", e => {
-            e.preventDefault();
-            if (navigationMode === "inside") {
-                // Move forward / backward along view direction
-                const yawRad = cameraYaw * Math.PI / 180;
-                const pitchRad = cameraPitch * Math.PI / 180;
-                const fwdX = Math.sin(yawRad) * Math.cos(pitchRad);
-                const fwdY = -Math.sin(pitchRad);
-                const fwdZ = Math.cos(yawRad) * Math.cos(pitchRad);
+        // Navigation Modes & Collision Toggle
+        document.getElementById("btn-toggle-collision").onclick = () => {
+            collisionEnabled = !collisionEnabled;
+            const btn = document.getElementById("btn-toggle-collision");
+            btn.classList.toggle("active", collisionEnabled);
+            btn.textContent = collisionEnabled ? "🛡️ Walk & Collision (ON)" : "🕊️ Free Fly Mode (OFF)";
+        };
 
-                const speed = -e.deltaY * 0.003;
-                cameraPos[0] += fwdX * speed;
-                cameraPos[1] += fwdY * speed;
-                cameraPos[2] += fwdZ * speed;
-                updateCamPosHUD();
-            } else {
-                orbitDistance = Math.max(0.5, Math.min(40.0, orbitDistance + e.deltaY * 0.005));
-            }
-        }, { passive: false });
-
-        // WASD Walkthrough
-        window.addEventListener("keydown", e => {
-            const yawRad = cameraYaw * Math.PI / 180;
-            const fwdX = Math.sin(yawRad);
-            const fwdZ = Math.cos(yawRad);
-            const rightX = Math.cos(yawRad);
-            const rightZ = -Math.sin(yawRad);
-            const moveSpeed = 0.15;
-
-            if (e.key === "w" || e.key === "W" || e.key === "ArrowUp") {
-                cameraPos[0] += fwdX * moveSpeed;
-                cameraPos[2] += fwdZ * moveSpeed;
-            } else if (e.key === "s" || e.key === "S" || e.key === "ArrowDown") {
-                cameraPos[0] -= fwdX * moveSpeed;
-                cameraPos[2] -= fwdZ * moveSpeed;
-            } else if (e.key === "a" || e.key === "A" || e.key === "ArrowLeft") {
-                cameraPos[0] -= rightX * moveSpeed;
-                cameraPos[2] -= rightZ * moveSpeed;
-            } else if (e.key === "d" || e.key === "D" || e.key === "ArrowRight") {
-                cameraPos[0] += rightX * moveSpeed;
-                cameraPos[2] += rightZ * moveSpeed;
-            } else if (e.key === "e" || e.key === "E") {
-                cameraPos[1] += moveSpeed; // Elevate
-            } else if (e.key === "q" || e.key === "Q") {
-                cameraPos[1] -= moveSpeed; // Lower
-            }
-            updateCamPosHUD();
-        });
-
-        // Mode Switching
-        document.getElementById("btn-mode-inside").onclick = (e) => {
+        document.getElementById("btn-mode-inside").onclick = () => {
             navigationMode = "inside";
+            orbitControls.enabled = false;
             document.getElementById("btn-mode-inside").classList.add("active");
             document.getElementById("btn-mode-orbit").classList.remove("active");
-            document.getElementById("view-mode-badge").textContent = "Inside 360 View";
-            document.getElementById("help-drag").textContent = "Look Around 360°";
-            cameraPos = [0.0, 0.0, 0.0];
+            camera.position.set(cameraPos[0], cameraPos[1], cameraPos[2]);
             updateCamPosHUD();
         };
 
-        document.getElementById("btn-mode-orbit").onclick = (e) => {
+        document.getElementById("btn-mode-orbit").onclick = () => {
             navigationMode = "orbit";
+            orbitControls.enabled = true;
             document.getElementById("btn-mode-orbit").classList.add("active");
             document.getElementById("btn-mode-inside").classList.remove("active");
-            document.getElementById("view-mode-badge").textContent = "Outside Orbit";
-            document.getElementById("help-drag").textContent = "Orbit Around Scene";
+            camera.position.set(0, 1.5, 4.0);
+            orbitControls.target.set(0, 0, 0);
+            updateCamPosHUD();
         };
 
-        // UI Controls
+        // UI Sliders
+        document.getElementById("speed-slider").addEventListener("input", e => {
+            moveSpeedMult = parseFloat(e.target.value);
+            document.getElementById("speed-label").textContent = moveSpeedMult.toFixed(1) + "x";
+        });
+
         document.getElementById("scale-slider").addEventListener("input", e => {
-            splatScaleMultiplier = parseFloat(e.target.value);
-            document.getElementById("scale-label").textContent = splatScaleMultiplier.toFixed(2) + "x";
+            splatScaleMult = parseFloat(e.target.value);
+            document.getElementById("scale-label").textContent = splatScaleMult.toFixed(2) + "x";
+            if (splatMesh) splatMesh.material.uniforms.u_scale_mult.value = splatScaleMult;
         });
 
         document.getElementById("fov-slider").addEventListener("input", e => {
-            fov = parseFloat(e.target.value);
+            const fov = parseFloat(e.target.value);
             document.getElementById("fov-label").textContent = fov.toFixed(0) + "°";
+            camera.fov = fov;
+            camera.updateProjectionMatrix();
+            if (splatMesh) {
+                const focal = (window.innerHeight / 2.0) / Math.tan((camera.fov * Math.PI) / 360.0);
+                splatMesh.material.uniforms.u_focal.value = focal;
+            }
         });
 
         document.getElementById("alpha-slider").addEventListener("input", e => {
             minAlphaCutoff = parseFloat(e.target.value);
             document.getElementById("alpha-label").textContent = minAlphaCutoff.toFixed(2);
+            if (splatMesh) splatMesh.material.uniforms.u_min_alpha.value = minAlphaCutoff;
         });
 
-        // Backgrounds
-        function setBg(color, activeBtn) {
-            bgColor = color;
+        // Background toggles
+        function setBg(colorHex, activeBtn) {
+            scene.background = new THREE.Color(colorHex);
             document.querySelectorAll("#bg-dark, #bg-gray, #bg-white, #bg-blue").forEach(b => b.classList.remove("active"));
             activeBtn.classList.add("active");
         }
-        document.getElementById("bg-dark").onclick = (e) => setBg([0.039, 0.043, 0.063, 1.0], e.target);
-        document.getElementById("bg-gray").onclick = (e) => setBg([0.2, 0.22, 0.25, 1.0], e.target);
-        document.getElementById("bg-white").onclick = (e) => setBg([0.95, 0.95, 0.97, 1.0], e.target);
-        document.getElementById("bg-blue").onclick = (e) => setBg([0.02, 0.04, 0.12, 1.0], e.target);
+        document.getElementById("bg-dark").onclick = (e) => setBg(0x0a0b10, e.target);
+        document.getElementById("bg-gray").onclick = (e) => setBg(0x22252e, e.target);
+        document.getElementById("bg-white").onclick = (e) => setBg(0xf5f5f7, e.target);
+        document.getElementById("bg-blue").onclick = (e) => setBg(0x05091a, e.target);
+
+        document.getElementById("btn-grid").onclick = () => {
+            gridHelper.visible = !gridHelper.visible;
+            document.getElementById("btn-grid").classList.toggle("active", gridHelper.visible);
+        };
 
         document.getElementById("btn-center").onclick = () => {
-            cameraPos = [0.0, 0.0, 0.0];
+            cameraPos = [0.0, floorY + eyeHeight, 0.0];
             cameraYaw = 0.0;
             cameraPitch = 0.0;
+            camera.position.set(cameraPos[0], cameraPos[1], cameraPos[2]);
             updateCamPosHUD();
         };
 
         document.getElementById("btn-snap").onclick = () => {
             const link = document.createElement("a");
-            link.download = "panogs_snapshot.png";
-            link.href = canvas.toDataURL("image/png");
+            link.download = "panogs_threejs_snapshot.png";
+            link.href = renderer.domElement.toDataURL("image/png");
             link.click();
         };
 
@@ -908,79 +1077,127 @@
             }
         });
 
-        // Render Loop
-        function render() {
-            // FPS calculation
-            frameCount++;
+        // Animation & Render Loop
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let lastFrameTime = performance.now();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
             const now = performance.now();
+            frameCount++;
             if (now - lastTime >= 1000) {
                 document.getElementById("fps-val").textContent = frameCount;
                 frameCount = 0;
                 lastTime = now;
             }
 
-            gl.clearColor(bgColor[0], bgColor[1], bgColor[2], bgColor[3]);
-            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            const dt = Math.min(0.1, (now - lastFrameTime) / 1000.0);
+            lastFrameTime = now;
 
-            if (numGaussians > 0) {
-                gl.enable(gl.BLEND);
-                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-                gl.disable(gl.DEPTH_TEST);
-
-                gl.useProgram(program);
-
-                let eyeX, eyeY, eyeZ;
-                let targetX, targetY, targetZ;
-
+            if (navigationMode === "inside") {
                 const yawRad = cameraYaw * Math.PI / 180;
                 const pitchRad = cameraPitch * Math.PI / 180;
 
-                if (navigationMode === "inside") {
-                    // Camera is inside room at cameraPos, looking along (yaw, pitch)
-                    eyeX = cameraPos[0];
-                    eyeY = cameraPos[1];
-                    eyeZ = cameraPos[2];
+                const lookX = Math.sin(yawRad) * Math.cos(pitchRad);
+                const lookY = -Math.sin(pitchRad);
+                const lookZ = Math.cos(yawRad) * Math.cos(pitchRad);
 
-                    const fwdX = Math.sin(yawRad) * Math.cos(pitchRad);
-                    const fwdY = -Math.sin(pitchRad);
-                    const fwdZ = Math.cos(yawRad) * Math.cos(pitchRad);
+                // Horizontal movement on floor plane
+                const fwdX = Math.sin(yawRad);
+                const fwdZ = Math.cos(yawRad);
 
-                    targetX = eyeX + fwdX;
-                    targetY = eyeY + fwdY;
-                    targetZ = eyeZ + fwdZ;
-                } else {
-                    // Outside Orbit
-                    eyeX = orbitDistance * Math.sin(yawRad) * Math.cos(pitchRad);
-                    eyeY = orbitDistance * Math.sin(pitchRad);
-                    eyeZ = orbitDistance * Math.cos(yawRad) * Math.cos(pitchRad);
+                const rightX = Math.cos(yawRad);
+                const rightZ = -Math.sin(yawRad);
 
-                    targetX = 0.0;
-                    targetY = 0.0;
-                    targetZ = 0.0;
+                const isSprint = keysDown["shift"];
+                const isCrouch = keysDown["c"] || keysDown["control"];
+                const baseSpeed = isSprint ? 4.0 : (isCrouch ? 1.2 : 2.2);
+                const step = moveSpeedMult * baseSpeed * dt;
+
+                let moveX = 0;
+                let moveZ = 0;
+                let moved = false;
+
+                if (keysDown["w"] || keysDown["arrowup"]) {
+                    moveX += fwdX * step;
+                    moveZ += fwdZ * step;
+                    moved = true;
+                }
+                if (keysDown["s"] || keysDown["arrowdown"]) {
+                    moveX -= fwdX * step;
+                    moveZ -= fwdZ * step;
+                    moved = true;
+                }
+                if (keysDown["a"] || keysDown["arrowleft"]) {
+                    moveX -= rightX * step;
+                    moveZ -= rightZ * step;
+                    moved = true;
+                }
+                if (keysDown["d"] || keysDown["arrowright"]) {
+                    moveX += rightX * step;
+                    moveZ += rightZ * step;
+                    moved = true;
                 }
 
-                const viewMat = mat4LookAt([eyeX, eyeY, eyeZ], [targetX, targetY, targetZ], [0, 1, 0]);
-                const aspect = canvas.width / canvas.height;
-                const projMat = mat4Perspective(fov * Math.PI / 180, aspect, 0.02, 100.0);
-                const focal = (canvas.height / 2.0) / Math.tan(fov * Math.PI / 360);
+                if (collisionEnabled) {
+                    // Slide smoothly around tables, chairs, sofas, pillars, and walls
+                    const [resolvedX, resolvedZ] = resolveMovement(
+                        cameraPos[0], cameraPos[2], moveX, moveZ, playerRadius
+                    );
+                    cameraPos[0] = resolvedX;
+                    cameraPos[2] = resolvedZ;
 
-                gl.uniformMatrix4fv(uView, false, new Float32Array(viewMat));
-                gl.uniformMatrix4fv(uProj, false, new Float32Array(projMat));
-                gl.uniform2f(uViewport, canvas.width, canvas.height);
-                gl.uniform1f(uScaleMult, splatScaleMultiplier);
-                gl.uniform1f(uFocal, focal);
-                gl.uniform1f(uMinAlpha, minAlphaCutoff);
+                    // Ground Height & Jump / Gravity
+                    const targetEyeY = floorY + (isCrouch ? 0.9 : eyeHeight);
+                    if (keysDown[" "] && isGrounded) {
+                        verticalVelocity = 3.5;
+                        isGrounded = false;
+                        moved = true;
+                    }
 
-                gl.bindVertexArray(vao);
-                gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, numGaussians);
+                    if (!isGrounded || cameraPos[1] > targetEyeY) {
+                        verticalVelocity -= 9.8 * dt;
+                        cameraPos[1] += verticalVelocity * dt;
+                        if (cameraPos[1] <= targetEyeY) {
+                            cameraPos[1] = targetEyeY;
+                            verticalVelocity = 0;
+                            isGrounded = true;
+                        }
+                        moved = true;
+                    } else {
+                        cameraPos[1] = THREE.MathUtils.lerp(cameraPos[1], targetEyeY, 0.25);
+                    }
+                } else {
+                    cameraPos[0] += moveX;
+                    cameraPos[2] += moveZ;
+                    if (keysDown[" "] || keysDown["e"]) { cameraPos[1] += step; moved = true; }
+                    if (keysDown["q"]) { cameraPos[1] -= step; moved = true; }
+                }
+
+                camera.position.set(cameraPos[0], cameraPos[1], cameraPos[2]);
+                camera.lookAt(
+                    cameraPos[0] + lookX,
+                    cameraPos[1] + lookY,
+                    cameraPos[2] + lookZ
+                );
+
+                if (moved) updateCamPosHUD();
+            } else {
+                orbitControls.update();
+                updateCamPosHUD();
             }
 
-            requestAnimationFrame(render);
+            // Real-Time Radix Depth Sorting
+            updateDepthSort();
+
+            renderer.render(scene, camera);
         }
 
-        // Auto load stream
+        // Auto Load Scene
         loadSceneFile("/api/scene.splat");
-        requestAnimationFrame(render);
+        animate();
     </script>
 </body>
 </html>

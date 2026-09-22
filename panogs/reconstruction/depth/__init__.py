@@ -10,7 +10,9 @@ def get_depth_estimator(model_name: str = "midas_small", device: str = "cpu") ->
     Factory function to instantiate depth estimators by name.
 
     Supported model names:
-        - "midas_small" (default, lightweight MiDaS CPU)
+        - "depth_anything_v2" (Depth Anything V2 Metric Indoor, recommended)
+        - "midas_small" (lightweight MiDaS CPU)
+        - "cubemap_midas" (MiDaS on 6 cubemap perspective faces)
         - "synthetic_room" (deterministic test box room)
         - "synthetic_gradient" (vertical gradient)
     """
@@ -19,11 +21,31 @@ def get_depth_estimator(model_name: str = "midas_small", device: str = "cpu") ->
         mode = "gradient" if "gradient" in model_name_lower else "room"
         return SyntheticDepthEstimator(mode=mode)
     elif "cubemap" in model_name_lower:
+        # Cubemap-based estimator (must be checked before standalone depth_anything)
         from panogs.reconstruction.depth.cubemap import CubemapDepthEstimator
+        if "depth_anything" in model_name_lower or "dav2" in model_name_lower:
+            # Cubemap with Depth Anything V2 metric depth as underlying estimator
+            from panogs.reconstruction.depth.depth_anything import DepthAnythingV2Estimator
+            variant = "small"
+            if "large" in model_name_lower:
+                variant = "large"
+            elif "base" in model_name_lower:
+                variant = "base"
+            underlying = DepthAnythingV2Estimator(variant=variant, device=device)
+            return CubemapDepthEstimator(device=device, underlying_estimator=underlying)
         base = "MiDaS_small"
         if "hybrid" in model_name_lower:
             base = "DPT_Hybrid"
         return CubemapDepthEstimator(base_model=base, device=device)
+    elif "depth_anything" in model_name_lower or "dav2" in model_name_lower:
+        # Standalone Depth Anything V2 (for perspective images, not panoramas)
+        from panogs.reconstruction.depth.depth_anything import DepthAnythingV2Estimator
+        variant = "small"
+        if "large" in model_name_lower:
+            variant = "large"
+        elif "base" in model_name_lower:
+            variant = "base"
+        return DepthAnythingV2Estimator(variant=variant, device=device)
     elif "midas" in model_name_lower:
         from panogs.reconstruction.depth.midas import MiDaSDepthEstimator
         variant = "MiDaS_small"
@@ -33,7 +55,10 @@ def get_depth_estimator(model_name: str = "midas_small", device: str = "cpu") ->
             variant = "DPT_Large"
         return MiDaSDepthEstimator(model_type=variant, device=device)
     else:
-        raise ValueError(f"Unknown depth estimator model '{model_name}'. Choose 'cubemap_midas', 'midas_small', or 'synthetic_room'.")
+        raise ValueError(
+            f"Unknown depth estimator model '{model_name}'. "
+            f"Choose 'cubemap_depth_anything', 'depth_anything_v2', 'cubemap_midas', 'midas_small', or 'synthetic_room'."
+        )
 
 
 __all__ = [

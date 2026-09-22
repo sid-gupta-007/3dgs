@@ -1,15 +1,14 @@
-"""
-3D Gaussian Initialization from Point Clouds.
-Computes adaptive spatial scale per Gaussian from local k-nearest neighbor spacing.
-"""
+from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional, Tuple
 import numpy as np
 from scipy.spatial import cKDTree
 
 from panogs.core.gaussian.model import GaussianModel, logit, rgb_to_sh0
 from panogs.core.logging import get_logger
-from panogs.reconstruction.pointcloud import PointCloud
+
+if TYPE_CHECKING:
+    from panogs.reconstruction.pointcloud import PointCloud
 
 
 def rotation_matrix_to_quaternion(R: np.ndarray) -> np.ndarray:
@@ -58,8 +57,8 @@ def rotation_matrix_to_quaternion(R: np.ndarray) -> np.ndarray:
 
 def initialize_from_pointcloud(
     point_cloud: PointCloud,
-    default_opacity: float = 0.85,
-    k_scale_neighbors: int = 3,
+    default_opacity: float = 0.92,
+    k_scale_neighbors: int = 8,
     scale_multiplier: float = 1.0,
     min_scale: float = 1e-4,
     max_scale: float = 10.0,
@@ -68,16 +67,16 @@ def initialize_from_pointcloud(
     Initialize a 3D Gaussian Splatting scene model from a PointCloud.
 
     - Positions: Directly set from point cloud XYZ.
-    - Scales: Anisotropic scales (sx, sy, sz) where sx, sy cover surface tangent spacing
-              and sz is thin normal thickness for flat surfels.
+    - Scales: Anisotropic surfel scales (sx, sy, sz) covering local 8-neighborhood
+              with tangential overlap to prevent slits/gaps.
     - Rotations: Quaternions aligned to surface normals (or identity if normals absent).
     - Opacity: Initialized to default_opacity in logit space.
     - Colors: RGB [0, 255] converted to float [0, 1] and mapped to zeroth-order spherical harmonics (SH0).
 
     Args:
         point_cloud: Input PointCloud.
-        default_opacity: Initial opacity value in (0.0, 1.0) (default: 0.85).
-        k_scale_neighbors: Number of nearest neighbors to query for adaptive scale (default: 3).
+        default_opacity: Initial opacity value in (0.0, 1.0) (default: 0.92).
+        k_scale_neighbors: Number of nearest neighbors to query for adaptive scale (default: 8).
         scale_multiplier: Global scale multiplier (default: 1.0).
         min_scale: Minimum scale clamp in meters (default: 1e-4).
         max_scale: Maximum scale clamp in meters (default: 10.0).
@@ -96,20 +95,21 @@ def initialize_from_pointcloud(
     # 1. Positions: (N, 3)
     xyz = point_cloud.points.copy()
 
-    # 2. Adaptive Scales from k-NN spacing
+    # 2. Adaptive Scales covering 8-neighborhood (latitude + longitude + diagonals)
     logger.info(f"Computing adaptive scales using k={k_scale_neighbors} nearest neighbors...")
     tree = cKDTree(xyz)
-    distances, _ = tree.query(xyz, k=min(k_scale_neighbors + 1, N))
+    k_query = min(k_scale_neighbors + 1, N)
+    distances, _ = tree.query(xyz, k=k_query)
 
     if distances.shape[1] > 1:
         mean_dists = np.mean(distances[:, 1:], axis=1)
+        base_scales = mean_dists * scale_multiplier
     else:
-        mean_dists = np.full(N, 0.05, dtype=np.float32)
+        base_scales = np.full(N, 0.05, dtype=np.float32)
 
     # Avoid zero distances for co-located points
-    mean_dists[mean_dists <= 0.0] = 0.01
-
-    adaptive_scales = np.clip(mean_dists * scale_multiplier, min_scale, max_scale).astype(np.float32)
+    base_scales[base_scales <= 0.0] = 0.01
+    adaptive_scales = np.clip(base_scales, min_scale, max_scale).astype(np.float32)
 
     # 3. Orientations and Anisotropic Scales from Surface Normals
     if point_cloud.normals is not None and len(point_cloud.normals) == N:
@@ -120,7 +120,6 @@ def initialize_from_pointcloud(
         normals = normals / norms
 
         # Build orthonormal tangent frame [t1, t2, n]
-        # Choose helper vector 'a' not parallel to normal
         helper = np.zeros_like(normals)
         is_y_dominant = np.abs(normals[:, 1]) > 0.9
         helper[is_y_dominant, 0] = 1.0   # (1, 0, 0)
@@ -136,15 +135,38 @@ def initialize_from_pointcloud(
         t2_norm[t2_norm == 0] = 1.0
         t2 = t2 / t2_norm
 
-        # R matrix with columns [t1, t2, n]
+        # R matrix with columns [t1, t2, normals]
         R = np.stack([t1, t2, normals], axis=-1)
         rotation_quats = rotation_matrix_to_quaternion(R)
 
-        # Anisotropic scales: sx, sy are tangential to surface (1.2x spacing to cover gaps),
-        # sz is thin normal thickness (0.15x) so splats hug walls/floors flatly
-        sx = adaptive_scales * 1.25
-        sy = adaptive_scales * 1.25
-        sz = np.clip(adaptive_scales * 0.15, min_scale, max_scale)
+        # Anisotropic scales: sx, sy are tangential to surface with smooth overlap,
+        # sz is surfel thickness (0.35x) to maintain solid visibility from all angles
+        sx = adaptive_scales * 1.2
+        sy = adaptive_scales * 1.2
+        sz = np.clip(adaptive_scales * 0.35, min_scale, max_scale)
+
+        # Edge-aware scale adjustment: at depth discontinuity edges,
+        # force thin billboard-like scales to prevent stretching across the gap
+        edge_mask = point_cloud.metadata.get("edge_mask", None) if point_cloud.metadata else None
+        if edge_mask is not None and len(edge_mask) == N:
+            edge_idx = np.asarray(edge_mask, dtype=bool)
+            edge_count = np.count_nonzero(edge_idx)
+            if edge_count > 0:
+                logger.info(f"Applying thin billboard scales to {edge_count:,} depth-edge Gaussians...")
+                # At edges: keep tangential extent but make very thin
+                # This creates card-like splats that don't bleed into the depth gap
+                sz[edge_idx] = np.clip(adaptive_scales[edge_idx] * 0.08, min_scale, max_scale)
+
+        # Depth-based scale capping: no splat can be wider than ~2 angular pixels at its depth
+        # This prevents distant wall splats from being enormous blobs
+        point_depths = np.linalg.norm(xyz, axis=-1)
+        total_pixels = point_cloud.metadata.get("total_pixels", N) if point_cloud.metadata else N
+        angular_pixel = (2.0 * np.pi) / max(1, int(np.sqrt(total_pixels) * 2))
+        max_angular_scale = point_depths * angular_pixel * 2.0
+        max_angular_scale = np.maximum(max_angular_scale, min_scale)
+        sx = np.minimum(sx, max_angular_scale)
+        sy = np.minimum(sy, max_angular_scale)
+
         scales = np.stack([sx, sy, sz], axis=-1).astype(np.float32)
     else:
         # Isotropic initial scales (s, s, s)

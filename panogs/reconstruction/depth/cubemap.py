@@ -6,7 +6,7 @@ and seamlessly fusing the depth maps back into equirectangular space.
 """
 
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 import numpy as np
 from PIL import Image
 
@@ -24,6 +24,10 @@ class CubemapDepthEstimator(DepthEstimator):
     Estimates undistorted 3D scene depth by decomposing the 360 panorama into
     6 rectilinear perspective cubemap views (Front, Right, Back, Left, Top, Bottom),
     inferring perspective depth, and re-projecting into equirectangular coordinates.
+    
+    Supports any underlying DepthEstimator (MiDaS, Depth Anything V2, etc).
+    When the underlying estimator produces metric depth, this estimator preserves
+    the metric scale and does NOT normalize to [0,1].
     """
 
     def __init__(
@@ -31,16 +35,24 @@ class CubemapDepthEstimator(DepthEstimator):
         base_model: str = "midas_small",
         device: str = "cpu",
         face_size: int = 512,
+        underlying_estimator: Optional[DepthEstimator] = None,
     ):
-        self.model_name = f"cubemap_{base_model}"
         self.device = device
         self.face_size = face_size
-        self.underlying_estimator = MiDaSDepthEstimator(model_type=base_model, device=device)
         self.logger = get_logger("depth.cubemap")
+        
+        if underlying_estimator is not None:
+            self.underlying_estimator = underlying_estimator
+            self.model_name = f"cubemap_{type(underlying_estimator).__name__}"
+            self._is_metric = getattr(underlying_estimator, 'is_metric', False)
+        else:
+            self.underlying_estimator = MiDaSDepthEstimator(model_type=base_model, device=device)
+            self.model_name = f"cubemap_{base_model}"
+            self._is_metric = False
 
     @property
     def is_metric(self) -> bool:
-        return False
+        return self._is_metric
 
     def estimate(
         self,
@@ -95,11 +107,15 @@ class CubemapDepthEstimator(DepthEstimator):
             res = self.underlying_estimator.estimate(face_pil)
             disp = res.depth_map
 
-            # Normalize face disparity to [0, 1]
-            disp_norm = (disp - disp.min()) / max(1e-6, disp.max() - disp.min())
-
-            face_cameras.append(cam)
-            face_disparities.append(disp_norm)
+            if self._is_metric:
+                # Preserve metric depth values (meters) — no normalization
+                face_cameras.append(cam)
+                face_disparities.append(disp)
+            else:
+                # Normalize non-metric disparity to [0, 1]
+                disp_norm = (disp - disp.min()) / max(1e-6, disp.max() - disp.min())
+                face_cameras.append(cam)
+                face_disparities.append(disp_norm)
 
         self.logger.info("Fusing 6 cubemap depth maps into continuous equirectangular disparity...")
 
@@ -145,19 +161,51 @@ class CubemapDepthEstimator(DepthEstimator):
             u_proj = (cam.fx * tx / tz) + cam.cx
             v_proj = (cam.fy * ty / tz) + cam.cy
 
-            u_idx = np.clip(np.round(u_proj).astype(np.int32), 0, F - 1)
-            v_idx = np.clip(np.round(v_proj).astype(np.int32), 0, F - 1)
+            # Sub-pixel bilinear interpolation
+            u_clamped = np.clip(u_proj, 0.0, float(F - 1))
+            v_clamped = np.clip(v_proj, 0.0, float(F - 1))
 
-            sampled_disp = disp_face[v_idx, u_idx]
-            fused_disparity[mask] = sampled_disp
+            x0 = np.floor(u_clamped).astype(np.int32)
+            x1 = np.clip(x0 + 1, 0, F - 1)
+            y0 = np.floor(v_clamped).astype(np.int32)
+            y1 = np.clip(y0 + 1, 0, F - 1)
 
-        # Normalize fused disparity to [0, 1]
-        disp_min = fused_disparity.min()
-        disp_max = fused_disparity.max()
-        fused_norm = (fused_disparity - disp_min) / max(1e-6, disp_max - disp_min)
+            wx = (u_clamped - x0).astype(np.float32)
+            wy = (v_clamped - y0).astype(np.float32)
 
-        return DepthResult(
-            depth_map=fused_norm.astype(np.float32),
-            is_metric=False,
-            model_name=self.model_name,
-        )
+            Ia = disp_face[y0, x0]
+            Ib = disp_face[y0, x1]
+            Ic = disp_face[y1, x0]
+            Id = disp_face[y1, x1]
+
+            sampled = (
+                Ia * (1.0 - wx) * (1.0 - wy)
+                + Ib * wx * (1.0 - wy)
+                + Ic * (1.0 - wx) * wy
+                + Id * wx * wy
+            )
+
+            if self._is_metric:
+                # Convert pinhole planar Z-depth to Euclidean radial ray distance: r = Z / tz
+                sampled_radial = sampled / tz
+                fused_disparity[mask] = sampled_radial
+            else:
+                fused_disparity[mask] = sampled
+
+        if self._is_metric:
+            # Metric depth: preserve absolute meter values
+            return DepthResult(
+                depth_map=fused_disparity.astype(np.float32),
+                is_metric=True,
+                model_name=self.model_name,
+            )
+        else:
+            # Non-metric: normalize fused disparity to [0, 1]
+            disp_min = fused_disparity.min()
+            disp_max = fused_disparity.max()
+            fused_norm = (fused_disparity - disp_min) / max(1e-6, disp_max - disp_min)
+            return DepthResult(
+                depth_map=fused_norm.astype(np.float32),
+                is_metric=False,
+                model_name=self.model_name,
+            )

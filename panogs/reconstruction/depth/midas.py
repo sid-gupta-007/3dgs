@@ -19,12 +19,21 @@ class MiDaSDepthEstimator(DepthEstimator):
     Produces relative inverse depth (disparity).
     """
 
-    def __init__(self, model_type: str = "MiDaS_small", device: str = "cpu"):
-        self.logger = get_logger("depth.midas")
-        self.model_type = model_type
+    def __init__(
+        self,
+        model_type: str = "MiDaS_small",
+        device: str = "cpu",
+    ):
+        model_mapping = {
+            "midas_small": "MiDaS_small",
+            "dpt_large": "DPT_Large",
+            "dpt_hybrid": "DPT_Hybrid",
+        }
+        self.model_type = model_mapping.get(model_type.lower(), model_type)
         self.device_name = device
         self._model = None
         self._transforms = None
+        self.logger = get_logger("depth.midas")
 
     def _load_model(self):
         """Lazy load MiDaS model and transforms."""

@@ -18,9 +18,9 @@ from panogs.core.logging import get_logger, setup_logging
 from panogs.io.depth import save_depth_result
 from panogs.io.gaussian_ply import load_gaussian_ply, save_gaussian_ply, save_gaussian_splat
 from panogs.io.images import inspect_image
-from panogs.io.ply import read_point_cloud_ply, write_pointcloud
+from panogs.io.ply import read_point_cloud_ply, read_pointcloud, write_pointcloud
 from panogs.reconstruction.depth import get_depth_estimator
-from panogs.reconstruction.panorama.sphere import generate_synthetic_sphere
+from panogs.reconstruction.panorama import generate_synthetic_sphere, reconstruct_layout_panorama
 from panogs.reconstruction.pointcloud import PointCloud, reconstruct_from_image
 from panogs.reconstruction.processing import process_point_cloud
 from panogs.rendering.camera import create_orbit_camera
@@ -161,8 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
     recon_parser.add_argument(
         "-m", "--model",
         type=str,
-        default="midas_small",
-        help="Depth model ('midas_small', 'synthetic_room', 'synthetic_gradient') (default: midas_small)",
+        default="cubemap_depth_anything",
+        help="Depth model ('cubemap_depth_anything', 'cubemap_midas', 'depth_anything_v2', 'midas_small', 'synthetic_room') (default: cubemap_depth_anything)",
     )
     recon_parser.add_argument(
         "--camera",
@@ -184,10 +184,96 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum scene depth bound in meters (default: 8.0)",
     )
     recon_parser.add_argument(
+        "--layout",
+        action="store_true",
+        default=True,
+        help="Use layout-guided Manhattan room architecture for true cuboidal indoor geometry (default: True)",
+    )
+    recon_parser.add_argument(
+        "--no-layout",
+        dest="layout",
+        action="store_false",
+        help="Disable layout-guided cuboidal geometry",
+    )
+    recon_parser.add_argument(
+        "--floor-height",
+        type=float,
+        default=1.5,
+        help="Height of camera above floor in meters (default: 1.5)",
+    )
+    recon_parser.add_argument(
+        "--ceiling-height",
+        type=float,
+        default=1.8,
+        help="Height of ceiling above camera in meters (default: 1.8)",
+    )
+    recon_parser.add_argument(
+        "--room-depth",
+        type=float,
+        default=4.5,
+        help="Distance from camera to front/back walls in meters (default: 4.5)",
+    )
+    recon_parser.add_argument(
+        "--room-width",
+        type=float,
+        default=4.0,
+        help="Distance from camera to side walls in meters (default: 4.0)",
+    )
+    recon_parser.add_argument(
         "--max-res",
         type=int,
         default=None,
         help="Optional maximum image dimension for downscaling",
+    )
+
+    # ─────────────────────────────────────────────────────────────
+    # Subcommand: video
+    # ─────────────────────────────────────────────────────────────
+    video_parser = subparsers.add_parser(
+        "video",
+        help="Reconstruct a full 3D scene from walking video (.mp4/.mov) using multi-view tracking & depth",
+        description="Extract sharp keyframes from video, track camera trajectory, and fuse multi-view depth into solid 3D point cloud & 3DGS splat.",
+    )
+    video_parser.add_argument(
+        "video_path",
+        type=str,
+        help="Path to input video file (MP4, MOV, AVI)",
+    )
+    video_parser.add_argument(
+        "-o", "--output",
+        type=str,
+        default="output/video_scene.ply",
+        help="Output path for reconstructed point cloud PLY (default: output/video_scene.ply)",
+    )
+    video_parser.add_argument(
+        "-m", "--model",
+        type=str,
+        default="depth_anything_v2",
+        help="Depth model ('depth_anything_v2', 'midas_small') (default: depth_anything_v2)",
+    )
+    video_parser.add_argument(
+        "--fps",
+        type=float,
+        default=2.0,
+        help="Keyframe extraction sampling frequency in FPS (default: 2.0)",
+    )
+    video_parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=60,
+        help="Maximum keyframes to extract (default: 60)",
+    )
+    video_parser.add_argument(
+        "--voxel-size",
+        type=float,
+        default=0.03,
+        help="Voxel grid downsampling size in meters (default: 0.03m)",
+    )
+    video_parser.add_argument(
+        "--splat",
+        action="store_true",
+        default=True,
+        help="Also initialize 3D Gaussians and export WebGL .splat file (default: True)",
     )
 
     # ─────────────────────────────────────────────────────────────
@@ -495,15 +581,30 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
 
     try:
         estimator = get_depth_estimator(args.model)
-        pc = reconstruct_from_image(
-            image_path=image_path,
-            depth_estimator=estimator,
-            camera_type=args.camera,
-            min_depth=args.min_depth,
-            max_depth=args.max_depth,
-            max_resolution=args.max_res,
-            output_ply=output_path,
-        )
+        
+        if getattr(args, "layout", True) and args.camera == "spherical" and not args.model.startswith("synthetic"):
+            logger.info("Using layout-guided Manhattan room architecture for true cuboidal 3D reconstruction...")
+            pc = reconstruct_layout_panorama(
+                image_path=image_path,
+                depth_estimator=estimator,
+                h_floor=args.floor_height,
+                h_ceiling=args.ceiling_height,
+                room_depth=args.room_depth,
+                room_width=args.room_width,
+                max_resolution=args.max_res,
+                output_ply=output_path,
+            )
+        else:
+            pc = reconstruct_from_image(
+                image_path=image_path,
+                depth_estimator=estimator,
+                camera_type=args.camera,
+                min_depth=args.min_depth,
+                max_depth=args.max_depth,
+                depth_edge_threshold=getattr(args, "edge_threshold", 0.0),
+                max_resolution=args.max_res,
+                output_ply=output_path,
+            )
 
         min_b, max_b = pc.bounds
         print("\n3D Reconstruction Complete:")
@@ -514,6 +615,55 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
         return 0
     except Exception as e:
         logger.error(f"Reconstruction failed: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
+def handle_video(args: argparse.Namespace) -> int:
+    """Handler for 'panogs video' subcommand."""
+    from panogs.reconstruction.video.video_pipeline import reconstruct_from_video
+    from panogs.core.gaussian.initialization import initialize_from_pointcloud
+    from panogs.io.gaussian_ply import save_gaussian_ply, save_gaussian_splat
+
+    logger = get_logger("cli.video")
+    video_path = Path(args.video_path)
+    output_path = Path(args.output)
+
+    try:
+        estimator = get_depth_estimator(args.model)
+        logger.info(f"Reconstructing multi-view 3D scene from video '{video_path}'...")
+
+        pc = reconstruct_from_video(
+            video_path=video_path,
+            depth_estimator=estimator,
+            target_fps=args.fps,
+            max_frames=args.max_frames,
+            voxel_size=args.voxel_size,
+            output_ply=output_path,
+        )
+
+        min_b, max_b = pc.bounds
+        print("\nMulti-View Video 3D Reconstruction Complete:")
+        print(f"  Input Video:     {video_path}")
+        print(f"  3D Points:       {pc.num_points:,}")
+        print(f"  Bounding Box:    [{min_b[0]:.2f}, {min_b[1]:.2f}, {min_b[2]:.2f}] to [{max_b[0]:.2f}, {max_b[1]:.2f}, {max_b[2]:.2f}]")
+        print(f"  Output PLY:      {output_path}")
+
+        if getattr(args, "splat", True):
+            splat_path = output_path.with_suffix(".splat")
+            gauss_path = output_path.with_name(f"{output_path.stem}_gaussians.ply")
+            logger.info("Initializing 3D Gaussians from video point cloud...")
+            model = initialize_from_pointcloud(pc)
+            save_gaussian_ply(gauss_path, model)
+            save_gaussian_splat(splat_path, model)
+            print(f"  3DGS PLY:        {gauss_path} ({model.num_gaussians:,} Gaussians)")
+            print(f"  WebGL Splat:     {splat_path}\n")
+
+        return 0
+    except Exception as e:
+        logger.error(f"Video reconstruction failed: {e}")
         if args.verbose:
             import traceback
             traceback.print_exc()
@@ -566,8 +716,16 @@ def handle_init_gaussians(args: argparse.Namespace) -> int:
 
     try:
         logger.info(f"Loading point cloud: {input_path}")
-        points, colors = read_point_cloud_ply(input_path)
-        pc = PointCloud(points=points, colors=colors)
+        pc = read_pointcloud(input_path)
+
+        if pc.normals is None or len(pc.normals) != pc.num_points:
+            logger.info("Computing local surface normals for anisotropic surface-aligned splats...")
+            pc = process_point_cloud(
+                point_cloud=pc,
+                voxel_size=None,
+                remove_outliers=False,
+                compute_normals=True,
+            )
 
         model = initialize_from_pointcloud(
             point_cloud=pc,
@@ -588,6 +746,7 @@ def handle_init_gaussians(args: argparse.Namespace) -> int:
         print(f"  Total Gaussians:    {model.num_gaussians:,}")
         print(f"  Scale Range:        [{np.min(scales):.4f}, {np.max(scales):.4f}] (mean: {np.mean(scales):.4f}m)")
         print(f"  Opacity:            {args.opacity:.2f}")
+        print(f"  Normals Aligned:    {pc.normals is not None}")
         print(f"  Output 3DGS PLY:    {output_path}\n")
         return 0
     except Exception as e:
@@ -746,6 +905,8 @@ def main(args: Optional[List[str]] = None) -> int:
         return handle_depth(parsed_args)
     elif parsed_args.command == "reconstruct":
         return handle_reconstruct(parsed_args)
+    elif parsed_args.command == "video":
+        return handle_video(parsed_args)
     elif parsed_args.command == "process":
         return handle_process(parsed_args)
     elif parsed_args.command == "init-gaussians":

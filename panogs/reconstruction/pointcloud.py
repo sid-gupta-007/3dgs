@@ -114,6 +114,7 @@ def backproject_depth_to_points(
     colors: np.ndarray,
     min_depth: float = 0.1,
     max_depth: float = 50.0,
+    depth_edge_threshold: float = 0.0,
     camera_center: Tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> PointCloud:
     """
@@ -126,10 +127,11 @@ def backproject_depth_to_points(
         colors: (H, W, 3) uint8 RGB colors.
         min_depth: Minimum valid depth distance for filtering.
         max_depth: Maximum valid depth distance for filtering.
+        depth_edge_threshold: Relative depth discontinuity cutoff to eliminate flying edge smear (0 to disable).
         camera_center: (Cx, Cy, Cz) camera position in world space.
 
     Returns:
-        PointCloud: Cleaned 3D point cloud with invalid depths filtered out.
+        PointCloud: Cleaned 3D point cloud with invalid depths and smear edges filtered out.
     """
     H, W, _ = rays.shape
     C = np.array(camera_center, dtype=np.float32).reshape(1, 1, 3)
@@ -138,16 +140,40 @@ def backproject_depth_to_points(
     d = depth_map[:, :, np.newaxis]
     P = C + d * rays
 
+    # Calculate depth discontinuity edge mask to eliminate flying pixels and rubber-sheet smears
+    if depth_edge_threshold > 0:
+        diff_x = np.abs(depth_map[:, 1:] - depth_map[:, :-1])
+        denom_x = np.minimum(depth_map[:, 1:], depth_map[:, :-1])
+        grad_x = np.zeros_like(depth_map)
+        grad_x[:, :-1] = diff_x / np.maximum(denom_x, 1e-4)
+
+        diff_y = np.abs(depth_map[1:, :] - depth_map[:-1, :])
+        denom_y = np.minimum(depth_map[1:, :], depth_map[:-1, :])
+        grad_y = np.zeros_like(depth_map)
+        grad_y[:-1, :] = diff_y / np.maximum(denom_y, 1e-4)
+
+        # 360 panorama seam wrap gradient
+        diff_wrap = np.abs(depth_map[:, 0] - depth_map[:, -1])
+        denom_wrap = np.minimum(depth_map[:, 0], depth_map[:, -1])
+        grad_wrap = diff_wrap / np.maximum(denom_wrap, 1e-4)
+        grad_x[:, -1] = grad_wrap
+
+        edge_mask = (grad_x > depth_edge_threshold) | (grad_y > depth_edge_threshold)
+    else:
+        edge_mask = np.zeros_like(depth_map, dtype=bool)
+
     # Flatten arrays
     flat_points = P.reshape(-1, 3)
     flat_colors = colors.reshape(-1, 3)
     flat_depth = depth_map.reshape(-1)
+    flat_edge = edge_mask.reshape(-1)
 
-    # Filter invalid points (NaN, Inf, or out-of-range depths)
+    # Filter invalid points (NaN, Inf, out-of-range depths, or flying edge discontinuities)
     valid_mask = (
         np.isfinite(flat_points).all(axis=-1)
         & (flat_depth >= min_depth)
         & (flat_depth <= max_depth)
+        & (~flat_edge)
     )
 
     valid_points = flat_points[valid_mask].astype(np.float32)
@@ -159,6 +185,7 @@ def backproject_depth_to_points(
         metadata={
             "total_pixels": H * W,
             "valid_points": int(np.sum(valid_mask)),
+            "filtered_edge_points": int(np.sum(flat_edge)),
             "min_depth": min_depth,
             "max_depth": max_depth,
         },
@@ -171,6 +198,7 @@ def reconstruct_from_image(
     camera_type: str = "spherical",
     min_depth: float = 0.5,
     max_depth: float = 8.0,
+    depth_edge_threshold: float = 0.0,
     max_resolution: Optional[int] = None,
     output_ply: Optional[Union[str, Path]] = None,
 ) -> PointCloud:
@@ -208,14 +236,15 @@ def reconstruct_from_image(
     else:
         raise ValueError(f"Unsupported camera type '{camera_type}'. Supported: 'spherical'")
 
-    # 4. Backproject to 3D point cloud
-    logger.info("Backprojecting depth and rays into 3D scene point cloud...")
+    # 4. Backproject to 3D point cloud with depth discontinuity filtering
+    logger.info(f"Backprojecting depth and rays into 3D scene point cloud (edge threshold={depth_edge_threshold})...")
     point_cloud = backproject_depth_to_points(
         rays=rays,
         depth_map=metric_depth,
         colors=img_rgb,
         min_depth=min_depth * 0.9,
         max_depth=max_depth * 1.1,
+        depth_edge_threshold=depth_edge_threshold,
     )
 
     logger.info(f"Reconstructed {point_cloud.num_points:,} 3D points.")
