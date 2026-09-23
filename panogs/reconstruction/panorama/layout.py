@@ -271,10 +271,7 @@ def reconstruct_layout_panorama(
     # 3. Generate equirectangular unit rays (with anti-moire jittering if enabled)
     rays = equirectangular_rays(H, W, jitter=jitter)
 
-    # 4. Backproject into 3D Euclidean coordinates: P = d * rays
-    P = d_final[:, :, np.newaxis] * rays
-
-    # 5. Compute Manhattan cuboid room geometry for solid shell backing
+    # 4. Compute Manhattan cuboid room geometry for architectural planar bounds & solid shell
     d_box, normals_box, plane_type = compute_cuboid_room_geometry(
         H, W,
         h_floor=h_floor,
@@ -284,6 +281,9 @@ def reconstruct_layout_panorama(
         w_east=room_width,
         w_west=room_width,
     )
+
+    # 5. Backproject into 3D Euclidean coordinates: P = d * rays (100% preserving real 3D object geometry)
+    P = d_final[:, :, np.newaxis] * rays
 
     # 6. Segment foreground furniture and inpaint occluded background (RGB + Depth)
     from panogs.reconstruction.inpainting import inpaint_background_texture, segment_foreground_objects
@@ -307,7 +307,7 @@ def reconstruct_layout_panorama(
         bg_rgb = img_rgb.copy()
         d_background = d_final.copy()
 
-    # 7. Compute 3D surface normals from spatial geometry
+    # 7. Compute 3D surface normals directly from accurate 3D geometry
     logger.info("Computing surface normals from 3D geometry...")
     Tu = (np.roll(P, -1, axis=1) - np.roll(P, 1, axis=1)) * 0.5
     Tv = np.zeros_like(P)
@@ -324,14 +324,14 @@ def reconstruct_layout_panorama(
     facing = np.sum(normals_grad * rays, axis=-1, keepdims=True)
     normals_grad[facing[:, :, 0] > 0] *= -1.0
 
-    # Planar Normal Snapping for Ceiling and Floor
+    # Gentle normal refinement ONLY for un-occluded pure ceiling and floor (never touching 3D objects)
     ry = rays[:, :, 1]
-    is_ceil = (ry > 0.55) & (P[:, :, 1] > h_ceiling * 0.70)
-    is_floor = (ry < -0.55) & (P[:, :, 1] < -h_floor * 0.70)
+    is_pure_ceil = (ry > 0.70) & (normals_grad[:, :, 1] < -0.80) & (fg_mask == 0)
+    is_pure_floor = (ry < -0.70) & (normals_grad[:, :, 1] > 0.80) & (fg_mask == 0)
 
     normals_snapped = normals_grad.copy()
-    normals_snapped[is_ceil] = [0.0, -1.0, 0.0]
-    normals_snapped[is_floor] = [0.0, 1.0, 0.0]
+    normals_snapped[is_pure_ceil] = [0.0, -1.0, 0.0]
+    normals_snapped[is_pure_floor] = [0.0, 1.0, 0.0]
 
     # At depth edges: force camera-facing billboard normals to prevent stretching sideways
     normals_billboard = -rays.copy()

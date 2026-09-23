@@ -263,6 +263,150 @@
             color: #ffffff;
         }
 
+        /* Scene Selector Styles */
+        .scene-switcher-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .scene-select-input {
+            background: rgba(18, 20, 32, 0.9);
+            border: 1px solid rgba(99, 102, 241, 0.45);
+            color: #ffffff;
+            font-family: 'Outfit', sans-serif;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 6px 12px;
+            border-radius: var(--radius-sm);
+            outline: none;
+            cursor: pointer;
+            transition: all 0.2s;
+            max-width: 240px;
+        }
+
+        .scene-select-input:hover, .scene-select-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 12px var(--accent-glow);
+        }
+
+        .scene-select-input option {
+            background: #0e111a;
+            color: #f1f5f9;
+            padding: 6px;
+        }
+
+        .btn-tab-link {
+            padding: 6px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            background: rgba(99, 102, 241, 0.18);
+            border: 1px solid rgba(99, 102, 241, 0.35);
+            color: #c7d2fe;
+            border-radius: var(--radius-sm);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-tab-link:hover {
+            background: rgba(99, 102, 241, 0.35);
+            color: #ffffff;
+            border-color: var(--accent);
+        }
+
+        .scene-cards-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .scene-card {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: var(--radius-md);
+            padding: 9px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+
+        .scene-card:hover {
+            background: rgba(99, 102, 241, 0.12);
+            border-color: rgba(99, 102, 241, 0.35);
+            transform: translateY(-1px);
+        }
+
+        .scene-card.active {
+            background: rgba(99, 102, 241, 0.24);
+            border-color: var(--accent);
+            box-shadow: 0 0 14px var(--accent-glow);
+        }
+
+        .scene-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .scene-card-title {
+            font-weight: 600;
+            font-size: 12.5px;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .scene-card-badge {
+            font-size: 9.5px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .badge-main { background: rgba(59, 130, 246, 0.25); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.45); }
+        .badge-ver2 { background: rgba(168, 85, 247, 0.25); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.45); }
+        .badge-ver3 { background: rgba(34, 197, 94, 0.25); color: #86efac; border: 1px solid rgba(34, 197, 94, 0.45); }
+        .badge-default { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
+
+        .scene-card-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .scene-card-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 3px;
+        }
+
+        .btn-load-scene {
+            flex: 1;
+            padding: 5px 8px;
+            font-size: 11px;
+            font-weight: 600;
+            border-radius: 4px;
+        }
+
+        .btn-newtab-scene {
+            padding: 5px 8px;
+            font-size: 11px;
+            border-radius: 4px;
+            color: #a5b4fc;
+        }
+
         /* Help bar (Bottom) */
         .bottom-bar {
             position: absolute;
@@ -361,6 +505,10 @@
                 <h1>PanoGS Explorer</h1>
             </div>
         </div>
+        <div class="scene-switcher-header">
+            <select id="header-scene-select" class="scene-select-input" title="Switch 3D Scene"></select>
+            <button id="btn-open-tab" class="btn-tab-link" title="Open active scene in new tab">↗ New Tab</button>
+        </div>
         <div class="badge" id="view-mode-badge">WebGL Three.js + Octree LOD</div>
     </header>
 
@@ -390,8 +538,17 @@
 
     <!-- Controls Panel -->
     <div class="controls-panel glass-panel">
+        <!-- Presentation Scene Switcher -->
+        <div class="section-title">
+            <span>🎬 Presentation Scenes</span>
+            <span class="badge" style="font-size: 9px; padding: 2px 6px;">1-Click</span>
+        </div>
+        <div class="scene-cards-list" id="scene-cards-container">
+            <!-- Dynamically populated from /api/scenes -->
+        </div>
+
         <!-- Quality Presets -->
-        <div class="section-title">Quality Presets (Aholo LOD)</div>
+        <div class="section-title" style="margin-top: 4px;">Quality Presets (Aholo LOD)</div>
         <div class="btn-group-3">
             <button id="preset-crisp" class="active">💎 Crisp</button>
             <button id="preset-balanced">⚖️ Balanced</button>
@@ -448,6 +605,26 @@
 
         <div class="btn-group" style="margin-top: 2px; grid-template-columns: 1fr;">
             <button id="btn-toggle-lod" class="active">🌲 Octree Spatial LOD (ON)</button>
+        </div>
+
+        <!-- Cinematic Lighting & Tone Mapping -->
+        <div class="section-title" style="margin-top: 4px;">Cinematic Tone Mapping & Color</div>
+        <div class="control-group">
+            <div class="label-row">
+                <span>Exposure (ACES)</span>
+                <span class="val" id="exposure-label">1.05x</span>
+            </div>
+            <input type="range" id="exposure-slider" min="0.4" max="2.5" step="0.05" value="1.05">
+        </div>
+        <div class="control-group">
+            <div class="label-row">
+                <span>Contrast Curve</span>
+                <span class="val" id="contrast-label">1.10x</span>
+            </div>
+            <input type="range" id="contrast-slider" min="0.7" max="1.6" step="0.05" value="1.10">
+        </div>
+        <div class="btn-group" style="margin-top: 2px; grid-template-columns: 1fr;">
+            <button id="btn-toggle-tonemap" class="active">🎬 ACES Filmic Tone Mapping (ON)</button>
         </div>
 
         <!-- Movement & Camera -->
@@ -876,7 +1053,7 @@
             }
         `;
 
-        // Fragment Shader: Smooth Exponential Splat Falloff
+        // Fragment Shader: Smooth Exponential Splat Falloff + ACES Filmic Tone Mapping
         const fsSource = `
             precision highp float;
 
@@ -885,6 +1062,18 @@
             varying vec2 v_screen_offset;
 
             uniform float u_min_alpha;
+            uniform float u_exposure;
+            uniform float u_contrast;
+            uniform int u_tonemap_enabled;
+
+            vec3 aces_tonemap(vec3 x) {
+                const float a = 2.51;
+                const float b = 0.03;
+                const float c = 2.43;
+                const float d = 0.59;
+                const float e = 0.14;
+                return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+            }
 
             void main() {
                 vec2 d = v_screen_offset;
@@ -898,7 +1087,20 @@
                     discard;
                 }
 
-                gl_FragColor = vec4(v_color.rgb, alpha);
+                vec3 col = v_color.rgb;
+
+                // Exposure & Dynamic Range Tone Mapping
+                col *= u_exposure;
+
+                if (u_tonemap_enabled == 1) {
+                    col = aces_tonemap(col);
+                }
+
+                // Cinematic Contrast Curve
+                col = (col - 0.5) * u_contrast + 0.5;
+                col = clamp(col, 0.0, 1.0);
+
+                gl_FragColor = vec4(col, alpha);
             }
         `;
 
@@ -1118,6 +1320,9 @@
                     u_max_pixel_radius: { value: maxPixelRadius },
                     u_min_pixel_radius: { value: detailCullingThreshold },
                     u_sharpness_boost: { value: sharpnessBoost },
+                    u_exposure: { value: exposureVal },
+                    u_contrast: { value: contrastVal },
+                    u_tonemap_enabled: { value: tonemapEnabled },
                 },
                 transparent: true,
                 depthWrite: false,
@@ -1409,6 +1614,31 @@
             if (splatMesh) splatMesh.material.uniforms.u_min_alpha.value = minAlphaCutoff;
         });
 
+        // Tone Mapping & Color Grading Controls
+        let exposureVal = 1.05;
+        let contrastVal = 1.10;
+        let tonemapEnabled = 1;
+
+        document.getElementById("exposure-slider").addEventListener("input", e => {
+            exposureVal = parseFloat(e.target.value);
+            document.getElementById("exposure-label").textContent = exposureVal.toFixed(2) + "x";
+            if (splatMesh) splatMesh.material.uniforms.u_exposure.value = exposureVal;
+        });
+
+        document.getElementById("contrast-slider").addEventListener("input", e => {
+            contrastVal = parseFloat(e.target.value);
+            document.getElementById("contrast-label").textContent = contrastVal.toFixed(2) + "x";
+            if (splatMesh) splatMesh.material.uniforms.u_contrast.value = contrastVal;
+        });
+
+        document.getElementById("btn-toggle-tonemap").onclick = () => {
+            tonemapEnabled = tonemapEnabled === 1 ? 0 : 1;
+            const btn = document.getElementById("btn-toggle-tonemap");
+            btn.classList.toggle("active", tonemapEnabled === 1);
+            btn.textContent = tonemapEnabled === 1 ? "🎬 ACES Filmic Tone Mapping (ON)" : "⚡ Raw Linear RGB (OFF)";
+            if (splatMesh) splatMesh.material.uniforms.u_tonemap_enabled.value = tonemapEnabled;
+        };
+
         // Background toggles
         function setBg(colorHex, activeBtn) {
             scene.background = new THREE.Color(colorHex);
@@ -1574,8 +1804,135 @@
             renderer.render(scene, camera);
         }
 
-        // Auto Load Scene
-        loadSceneFile("/api/scene.splat");
+        // ─────────────────────────────────────────────────────────────
+        // Scene Catalog & Switching Engine
+        // ─────────────────────────────────────────────────────────────
+        let currentSceneId = "";
+        let availableScenes = [];
+
+        async function initSceneCatalog(initialSceneId) {
+            try {
+                const res = await fetch('/api/scenes');
+                const data = await res.json();
+                availableScenes = data.scenes || [];
+                renderSceneMenu(initialSceneId);
+            } catch (e) {
+                console.warn("Could not fetch /api/scenes catalog:", e);
+            }
+        }
+
+        function renderSceneMenu(activeId) {
+            const selectEl = document.getElementById("header-scene-select");
+            const cardsContainer = document.getElementById("scene-cards-container");
+            if (!selectEl || !cardsContainer) return;
+
+            selectEl.innerHTML = "";
+            cardsContainer.innerHTML = "";
+
+            availableScenes.forEach(sc => {
+                // Populate dropdown
+                const opt = document.createElement("option");
+                opt.value = sc.id;
+                opt.textContent = `${sc.name} (${sc.badge || sc.branch})`;
+                if (sc.id === activeId || (activeId && sc.id.includes(activeId))) {
+                    opt.selected = true;
+                    currentSceneId = sc.id;
+                }
+                selectEl.appendChild(opt);
+
+                // Badge styling
+                let badgeCls = "badge-default";
+                const b = (sc.branch || "").toLowerCase();
+                if (b.includes("main")) badgeCls = "badge-main";
+                else if (b.includes("ver-2") || b.includes("ver2")) badgeCls = "badge-ver2";
+                else if (b.includes("ver-3") || b.includes("ver3")) badgeCls = "badge-ver3";
+
+                const isCurrent = sc.id === currentSceneId;
+
+                // Populate side card
+                const card = document.createElement("div");
+                card.className = "scene-card" + (isCurrent ? " active" : "");
+                card.id = `card-${sc.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                card.innerHTML = `
+                    <div class="scene-card-header">
+                        <div class="scene-card-title">${sc.name}</div>
+                        <span class="scene-card-badge ${badgeCls}">${sc.badge || sc.branch}</span>
+                    </div>
+                    <div class="scene-card-meta">
+                        <span>${sc.gaussians ? sc.gaussians.toLocaleString() + ' splats' : ''}</span>
+                        <span>${sc.size_mb ? sc.size_mb + ' MB' : ''}</span>
+                    </div>
+                    <div class="scene-card-actions">
+                        <button class="btn-load-scene ${isCurrent ? 'active' : ''}">⚡ Switch Scene</button>
+                        <button class="btn-newtab-scene" title="Open in new tab">↗ Tab</button>
+                    </div>
+                `;
+
+                // Load in current tab
+                card.querySelector(".btn-load-scene").onclick = (e) => {
+                    e.stopPropagation();
+                    switchScene(sc.id);
+                };
+                card.onclick = () => {
+                    switchScene(sc.id);
+                };
+
+                // Open in new tab
+                card.querySelector(".btn-newtab-scene").onclick = (e) => {
+                    e.stopPropagation();
+                    window.open(`/?scene=${encodeURIComponent(sc.id)}`, '_blank');
+                };
+
+                cardsContainer.appendChild(card);
+            });
+
+            selectEl.onchange = (e) => {
+                switchScene(e.target.value);
+            };
+
+            const openTabBtn = document.getElementById("btn-open-tab");
+            if (openTabBtn) {
+                openTabBtn.onclick = () => {
+                    const selId = selectEl.value || currentSceneId;
+                    if (selId) {
+                        window.open(`/?scene=${encodeURIComponent(selId)}`, '_blank');
+                    }
+                };
+            }
+        }
+
+        async function switchScene(sceneId) {
+            if (!sceneId) return;
+            currentSceneId = sceneId;
+
+            // Update URL without reload
+            const newUrl = `/?scene=${encodeURIComponent(sceneId)}`;
+            window.history.pushState({ scene: sceneId }, '', newUrl);
+
+            // Update UI indicators
+            const selectEl = document.getElementById("header-scene-select");
+            if (selectEl) selectEl.value = sceneId;
+
+            document.querySelectorAll(".scene-card").forEach(c => c.classList.remove("active"));
+            document.querySelectorAll(".btn-load-scene").forEach(b => b.classList.remove("active"));
+            const card = document.getElementById(`card-${sceneId.replace(/[^a-zA-Z0-9]/g, '_')}`);
+            if (card) {
+                card.classList.add("active");
+                const btn = card.querySelector(".btn-load-scene");
+                if (btn) btn.classList.add("active");
+            }
+
+            const apiUrl = `/api/scene.splat?scene=${encodeURIComponent(sceneId)}`;
+            await loadSceneFile(apiUrl);
+        }
+
+        // Auto Load Scene (supports ?scene=comfy_cafe_main.splat or ?model=...)
+        const urlParams = new URLSearchParams(window.location.search);
+        const sceneParam = urlParams.get('scene') || urlParams.get('model') || 'comfy_cafe_main.splat';
+        currentSceneId = sceneParam;
+        const sceneUrl = `/api/scene.splat?scene=${encodeURIComponent(sceneParam)}`;
+        loadSceneFile(sceneUrl);
+        initSceneCatalog(sceneParam);
         animate();
     </script>
 </body>

@@ -193,26 +193,31 @@ def initialize_from_pointcloud(
         edge_mask = point_cloud.metadata.get("edge_mask", None) if point_cloud.metadata else None
         is_edge = np.asarray(edge_mask, dtype=bool) if (edge_mask is not None and len(edge_mask) == N) else np.zeros(N, dtype=bool)
 
-        if shape_mode in ("cylindrical", "needle", "pointy", "light_pointy"):
-            # Pointy needles aligned with light source reflection vectors
-            sx = adaptive_scales * 1.55
+        if shape_mode in ("cylindrical", "needle"):
+            # Directional needles along silhouette contours
+            sx = adaptive_scales * 1.40
             sy = np.clip(adaptive_scales * 0.45, min_scale, max_scale)
             sz = np.clip(adaptive_scales * 0.08, min_scale, max_scale)
         elif shape_mode == "surfel":
-            # Flat planar surfel discs with continuous overlap
-            sx = adaptive_scales * 1.15
-            sy = adaptive_scales * 1.15
-            sz = np.clip(adaptive_scales * 0.08, min_scale, max_scale)
+            # Flat planar surfel discs with full continuous overlap (zero stripes/gaps)
+            sx = adaptive_scales * 1.30
+            sy = adaptive_scales * 1.30
+            sz = np.clip(adaptive_scales * 0.05, min_scale, max_scale)
+        elif shape_mode in ("pointy", "light_pointy"):
+            # Light-oriented anisotropic surfels: elongated along light flow without leaving gaps
+            sx = adaptive_scales * 1.35
+            sy = adaptive_scales * 1.20
+            sz = np.clip(adaptive_scales * 0.06, min_scale, max_scale)
         else:
-            # Hybrid: continuous surfel discs for flat walls/floors + pointy needles for edges & highlights
-            sx = adaptive_scales * 1.15
-            sy = adaptive_scales * 1.15
-            sz = np.clip(adaptive_scales * 0.08, min_scale, max_scale)
+            # Hybrid (Default): continuous solid surfel discs on walls + razor contours at edges
+            sx = adaptive_scales * 1.28
+            sy = adaptive_scales * 1.28
+            sz = np.clip(adaptive_scales * 0.06, min_scale, max_scale)
 
             # Pointy cylindrical needles at edge contours and specular highlights
             if np.any(is_edge):
-                sx[is_edge] = adaptive_scales[is_edge] * 1.45
-                sy[is_edge] = np.clip(adaptive_scales[is_edge] * 0.35, min_scale, max_scale)
+                sx[is_edge] = adaptive_scales[is_edge] * 1.40
+                sy[is_edge] = np.clip(adaptive_scales[is_edge] * 0.50, min_scale, max_scale)
                 sz[is_edge] = np.clip(adaptive_scales[is_edge] * 0.05, min_scale, max_scale)
 
         scales = np.stack([sx, sy, sz], axis=-1).astype(np.float32)
