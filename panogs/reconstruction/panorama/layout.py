@@ -275,7 +275,7 @@ def reconstruct_layout_panorama(
     normals_final = (normals_final / n_final_len).astype(np.float32)
 
     # Filter out flying transition slope pixels so furniture doesn't smear into walls
-    flying_mask = detect_depth_edges(d_final, rel_threshold=0.10, abs_threshold=0.25)
+    flying_mask = detect_depth_edges(d_final, rel_threshold=0.08, abs_threshold=0.20)
     keep_primary = ~flying_mask.reshape(-1)
 
     flat_P = P.reshape(-1, 3).astype(np.float32)[keep_primary]
@@ -288,7 +288,7 @@ def reconstruct_layout_panorama(
     all_normals = [flat_N]
     all_edges = [flat_E]
 
-    # 7. Ground Floor Infilling: synthesize floor splats under occluded furniture
+    # 7. Ground Floor Infilling: synthesize solid floor splats under occluded furniture
     ry = rays[:, :, 1]
     floor_occluded = (fg_mask > 0) & (ry < -0.06)
     if np.any(floor_occluded):
@@ -310,44 +310,23 @@ def reconstruct_layout_panorama(
             all_edges.append(infill_edge)
             logger.info(f"Synthesized {len(infill_pts):,} inpainted ground floor splats under occluded furniture.")
 
-    # 8. Volumetric Backing: add solid back-facing surfels to foreground furniture
-    if fg_count > 0:
-        fg_bool = fg_mask > 0
-        fg_pts = P[fg_bool]
-        fg_rays = rays[fg_bool]
-        fg_d = d_final[fg_bool]
-        fg_norms = normals_final[fg_bool]
-        fg_cols = img_rgb[fg_bool]
-
-        thickness = np.clip(fg_d * 0.04, 0.03, 0.12)[:, np.newaxis]
-        back_pts = (fg_pts - fg_rays * thickness).astype(np.float32)
-        back_norms = (-fg_norms).astype(np.float32)
-        back_cols = (fg_cols.astype(np.float32) * 0.78).astype(np.uint8)
-        back_edge = np.zeros(len(back_pts), dtype=bool)
-
-        all_points.append(back_pts)
-        all_colors.append(back_cols)
-        all_normals.append(back_norms)
-        all_edges.append(back_edge)
-        logger.info(f"Added {len(back_pts):,} solid volumetric back-facing surfels to furniture.")
-
-    flat_points = np.concatenate(all_points, axis=0)
-    flat_colors = np.concatenate(all_colors, axis=0)
-    flat_normals = np.concatenate(all_normals, axis=0)
-    flat_edge_mask = np.concatenate(all_edges, axis=0)
+    merged_points = np.vstack(all_points).astype(np.float32)
+    merged_colors = np.vstack(all_colors).astype(np.uint8)
+    merged_normals = np.vstack(all_normals).astype(np.float32)
+    merged_edges = np.concatenate(all_edges)
 
     point_cloud = PointCloud(
-        points=flat_points,
-        colors=flat_colors,
-        normals=flat_normals,
+        points=merged_points,
+        colors=merged_colors,
+        normals=merged_normals,
         metadata={
             "total_pixels": H * W,
             "depth_is_metric": is_metric,
             "depth_model": res.model_name,
             "edge_pixel_count": int(edge_count),
             "edge_pixel_ratio": float(edge_count / (H * W)),
-            "edge_mask": flat_edge_mask,
-            "infilled_points": int(len(flat_points) - H * W),
+            "edge_mask": merged_edges,
+            "infilled_points": int(len(merged_points) - H * W),
         },
     )
 

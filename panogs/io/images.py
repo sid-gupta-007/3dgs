@@ -164,9 +164,19 @@ def load_image(
         else:
             hdr_rgb = cv2.cvtColor(hdr_bgr, cv2.COLOR_BGR2RGB)
 
-        # Tone map linear radiance to display RGB via Reinhard operator
-        toned = hdr_rgb / (1.0 + hdr_rgb)
-        uint8_rgb = (np.clip(toned, 0.0, 1.0) * 255.0).astype(np.uint8)
+        # Adaptive exposure and ACES Filmic tone mapping with sRGB gamma
+        valid_rad = hdr_rgb[hdr_rgb > 1e-4]
+        med = float(np.median(valid_rad)) if len(valid_rad) > 0 else 0.5
+        exposure = 0.55 / max(1e-3, med)
+        x = hdr_rgb * exposure
+        a = 2.51
+        b = 0.03
+        c = 2.43
+        d = 0.59
+        e = 0.14
+        aces = np.clip((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0)
+        srgb = np.power(aces, 1.0 / 2.2)
+        uint8_rgb = (np.clip(srgb, 0.0, 1.0) * 255.0).astype(np.uint8)
         img = Image.fromarray(uint8_rgb)
     else:
         img = Image.open(file_path)

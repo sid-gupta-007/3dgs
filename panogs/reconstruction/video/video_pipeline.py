@@ -149,9 +149,18 @@ def reconstruct_from_video(
         depth = res.depth_map.astype(np.float32)
         depth = np.clip(depth, 0.3, 15.0)
 
+        # Filter out flying depth edge transitions (rubber-sheet webs between objects and walls)
+        dy, dx = np.gradient(depth)
+        grad_mag = np.sqrt(dx**2 + dy**2)
+        valid_mask = (grad_mag < (0.15 * depth)).flatten()
+
         # 3D points in camera coordinates: P_cam = depth * rays_cam
         P_cam = (depth[:, :, np.newaxis] * rays_cam).reshape(-1, 3)
         colors_flat = rgb.reshape(-1, 3)
+
+        # Apply edge pruning
+        P_cam = P_cam[valid_mask]
+        colors_flat = colors_flat[valid_mask]
 
         # Transform to world coordinates: P_world = R_cw^T @ P_cam + C_w
         P_world = np.matmul(P_cam, R_cw) + C_w.T
