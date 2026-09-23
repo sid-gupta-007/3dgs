@@ -1143,13 +1143,13 @@
         let collisionEnabled = true;
         let floorY = -1.4;
         let eyeHeight = 1.6;
-        let playerRadius = 0.35;
+        let playerRadius = 0.30;
         let verticalVelocity = 0.0;
         let isGrounded = true;
         let obstacleCells = new Set();
         const GRID_CELL = 0.25;
-        const SPAWN_CLEAR_RADIUS = 1.2;
-        const MIN_POINTS_FOR_SOLID = 12;
+        const SPAWN_CLEAR_RADIUS = 2.2;
+        const MIN_POINTS_FOR_SOLID = 25;
 
         function buildObstacleGrid(positions, num) {
             obstacleCells.clear();
@@ -1224,7 +1224,7 @@
                 return [curX + dx, curZ + dz];
             }
 
-            const checkRad = radius + GRID_CELL * 0.75;
+            const checkRad = radius + GRID_CELL * 0.5;
             let effDx = dx;
             let effDz = dz;
 
@@ -1245,12 +1245,6 @@
                     if (dot < 0) {
                         effDx -= dot * nx;
                         effDz -= dot * nz;
-                    }
-
-                    const penetration = checkRad - obs.dist;
-                    if (penetration > 0) {
-                        effDx += nx * Math.min(penetration * 0.4, 0.05);
-                        effDz += nz * Math.min(penetration * 0.4, 0.05);
                     }
                 }
             }

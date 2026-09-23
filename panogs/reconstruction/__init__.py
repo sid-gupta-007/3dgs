@@ -11,6 +11,15 @@ from panogs.reconstruction.processing import (
     remove_statistical_outliers,
     voxel_downsample,
 )
+from panogs.reconstruction.synthesis import (
+    create_virtual_camera_rig,
+    synthesize_multi_view_scene,
+)
+from panogs.reconstruction.ldi import (
+    LDILayer,
+    construct_layered_depth_image,
+    reconstruct_from_ldi,
+)
 
 __all__ = [
     "PointCloud",
@@ -21,4 +30,9 @@ __all__ = [
     "remove_statistical_outliers",
     "estimate_surface_normals",
     "process_point_cloud",
+    "create_virtual_camera_rig",
+    "synthesize_multi_view_scene",
+    "LDILayer",
+    "construct_layered_depth_image",
+    "reconstruct_from_ldi",
 ]

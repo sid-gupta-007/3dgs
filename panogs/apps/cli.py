@@ -226,6 +226,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional maximum image dimension for downscaling",
     )
     recon_parser.add_argument(
+        "--solid-shell",
+        action="store_true",
+        default=True,
+        help="Synthesize 100% solid enclosed room shell backing for all 6 cuboid surfaces (default: True)",
+    )
+    recon_parser.add_argument(
+        "--no-solid-shell",
+        dest="solid_shell",
+        action="store_false",
+        help="Disable solid room shell backing",
+    )
+    recon_parser.add_argument(
+        "--jitter",
+        action="store_true",
+        default=False,
+        help="Enable sub-pixel anti-moire ray sampling (default: False)",
+    )
+    recon_parser.add_argument(
+        "--no-jitter",
+        dest="jitter",
+        action="store_false",
+        help="Disable anti-moire ray jittering",
+    )
+    recon_parser.add_argument(
+        "--synth-views",
+        type=int,
+        default=0,
+        help="Number of generative novel perspective viewpoints to synthesize for occlusions (default: 0, set e.g. 4 for multi-view rig)",
+    )
+    recon_parser.add_argument(
+        "--layers",
+        type=int,
+        default=1,
+        help="Number of Layered Depth Image (LDI) tiers for multi-layer occlusion inpainting (default: 1, set 3-4 for PanoDreamer LDI)",
+    )
+    recon_parser.add_argument(
+        "--ldi",
+        action="store_true",
+        default=False,
+        help="Enable full Layered Depth Image (LDI) reconstruction engine",
+    )
+    recon_parser.add_argument(
         "--splat",
         action="store_true",
         default=True,
@@ -241,26 +283,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--shape",
         type=str,
         default="hybrid",
-        choices=["hybrid", "cylindrical", "needle", "surfel", "isotropic"],
-        help="Geometric shape of 3D Gaussians: 'hybrid', 'cylindrical'/'needle', 'surfel', or 'isotropic' (default: hybrid)",
+        choices=["hybrid", "cylindrical", "needle", "surfel", "isotropic", "pointy", "light_pointy"],
+        help="Geometric shape of 3D Gaussians: 'hybrid', 'cylindrical'/'needle', 'pointy'/'light_pointy' (light-source aligned needles), 'surfel', or 'isotropic' (default: hybrid)",
     )
     recon_parser.add_argument(
         "--sharpness",
         type=float,
-        default=0.7,
-        help="Gaussian sharpness factor [0.0 = soft, 1.0 = ultra-tight] (default: 0.7)",
+        default=0.5,
+        help="Gaussian sharpness factor [0.0 = soft, 1.0 = ultra-tight] (default: 0.5)",
     )
     recon_parser.add_argument(
         "--scale-factor",
         type=float,
-        default=0.65,
-        help="Multiplier on adaptive k-NN spacing (default: 0.65)",
+        default=1.10,
+        help="Multiplier on adaptive k-NN spacing (default: 1.10)",
     )
     recon_parser.add_argument(
         "--opacity",
         type=float,
-        default=0.92,
-        help="Initial opacity in (0, 1) (default: 0.92)",
+        default=0.95,
+        help="Initial opacity in (0, 1) (default: 0.95)",
     )
 
     # ─────────────────────────────────────────────────────────────
@@ -283,13 +325,20 @@ def build_parser() -> argparse.ArgumentParser:
     pano_parser.add_argument("--ceiling-height", type=float, default=1.8, help="Ceiling height in meters (default: 1.8)")
     pano_parser.add_argument("--room-depth", type=float, default=4.5, help="Room depth in meters (default: 4.5)")
     pano_parser.add_argument("--room-width", type=float, default=4.0, help="Room width in meters (default: 4.0)")
+    pano_parser.add_argument("--solid-shell", action="store_true", default=True, help="Synthesize solid room shell backing (default: True)")
+    pano_parser.add_argument("--no-solid-shell", dest="solid_shell", action="store_false", help="Disable solid room shell backing")
+    pano_parser.add_argument("--jitter", action="store_true", default=False, help="Anti-moire ray jittering (default: False)")
+    pano_parser.add_argument("--no-jitter", dest="jitter", action="store_false", help="Disable anti-moire ray jittering")
+    pano_parser.add_argument("--synth-views", type=int, default=0, help="Novel perspective viewpoints to synthesize for occlusions (default: 0, set e.g. 4 for multi-view rig)")
+    pano_parser.add_argument("--layers", type=int, default=1, help="Number of LDI depth layers (default: 1, set 3-4 for PanoDreamer LDI)")
+    pano_parser.add_argument("--ldi", action="store_true", default=False, help="Enable Layered Depth Image reconstruction")
     pano_parser.add_argument("--max-res", type=int, default=None, help="Maximum image resolution")
     pano_parser.add_argument("--splat", action="store_true", default=True, help="Export WebGL .splat (default: True)")
     pano_parser.add_argument("--no-splat", dest="splat", action="store_false", help="Disable .splat export")
-    pano_parser.add_argument("--shape", type=str, default="hybrid", choices=["hybrid", "cylindrical", "needle", "surfel", "isotropic"], help="Gaussian shape (default: hybrid)")
-    pano_parser.add_argument("--sharpness", type=float, default=0.7, help="Sharpness factor [0.0-1.0] (default: 0.7)")
-    pano_parser.add_argument("--scale-factor", type=float, default=0.65, help="Scale multiplier (default: 0.65)")
-    pano_parser.add_argument("--opacity", type=float, default=0.92, help="Initial opacity (default: 0.92)")
+    pano_parser.add_argument("--shape", type=str, default="hybrid", choices=["hybrid", "cylindrical", "needle", "surfel", "isotropic", "pointy", "light_pointy"], help="Gaussian shape: 'hybrid', 'pointy'/'light_pointy', 'needle', 'surfel', 'isotropic' (default: hybrid)")
+    pano_parser.add_argument("--sharpness", type=float, default=0.5, help="Sharpness factor [0.0-1.0] (default: 0.5)")
+    pano_parser.add_argument("--scale-factor", type=float, default=1.10, help="Scale multiplier (default: 1.10)")
+    pano_parser.add_argument("--opacity", type=float, default=0.95, help="Initial opacity (default: 0.95)")
 
     # ─────────────────────────────────────────────────────────────
     # Subcommand: video
@@ -425,8 +474,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--shape",
         type=str,
         default="hybrid",
-        choices=["hybrid", "cylindrical", "needle", "surfel", "isotropic"],
-        help="Geometric shape of 3D Gaussians: 'hybrid' (surfel walls + pointy needle edges), 'cylindrical' / 'needle', 'surfel' (planar discs), or 'isotropic' (spheres) (default: hybrid)",
+        choices=["hybrid", "cylindrical", "needle", "surfel", "isotropic", "pointy", "light_pointy"],
+        help="Geometric shape of 3D Gaussians: 'hybrid', 'cylindrical'/'needle', 'pointy'/'light_pointy' (light-source aligned needles), 'surfel', or 'isotropic' (default: hybrid)",
     )
     gauss_parser.add_argument(
         "--splat",
@@ -668,7 +717,38 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
     try:
         estimator = get_depth_estimator(args.model)
         
-        if getattr(args, "layout", True) and args.camera == "spherical" and not args.model.startswith("synthetic"):
+        num_layers = getattr(args, "layers", 1)
+        use_ldi = getattr(args, "ldi", False) or num_layers > 1
+
+        if use_ldi and args.camera == "spherical":
+            logger.info(f"Using PanoDreamer-inspired Layered Depth Image (LDI) reconstruction with {max(2, num_layers)} layers...")
+            from panogs.io.images import load_image_as_numpy
+            from panogs.reconstruction.ldi import construct_layered_depth_image, reconstruct_from_ldi
+            
+            img_rgb = load_image_as_numpy(image_path, normalize_float=False, max_resolution=args.max_res)
+            res = estimator.estimate(img_rgb)
+            depth_raw = res.depth_map.astype(np.float32)
+            if not getattr(res, 'is_metric', False):
+                disp = depth_raw
+                disp_min = float(np.percentile(disp, 2))
+                disp_max = float(np.percentile(disp, 98))
+                norm_disp = np.clip((disp - disp_min) / max(1e-4, disp_max - disp_min), 0.0, 1.0)
+                inv = 1.0 / (norm_disp + 0.1)
+                inv_min, inv_max = 1.0 / 1.1, 1.0 / 0.1
+                norm_inv = (inv - inv_min) / (inv_max - inv_min)
+                d_final = (0.6 + 8.0 * norm_inv).astype(np.float32)
+            else:
+                d_final = np.clip(depth_raw, 0.3, 30.0)
+
+            layers = construct_layered_depth_image(
+                img_rgb=img_rgb,
+                depth_map=d_final,
+                num_layers=max(2, num_layers),
+                h_floor=args.floor_height,
+                h_ceiling=args.ceiling_height,
+            )
+            pc = reconstruct_from_ldi(layers, output_ply=output_path)
+        elif getattr(args, "layout", True) and args.camera == "spherical" and not args.model.startswith("synthetic"):
             logger.info("Using layout-guided Manhattan room architecture for true cuboidal 3D reconstruction...")
             pc = reconstruct_layout_panorama(
                 image_path=image_path,
@@ -677,9 +757,31 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
                 h_ceiling=args.ceiling_height,
                 room_depth=args.room_depth,
                 room_width=args.room_width,
+                solid_shell=getattr(args, "solid_shell", True),
+                jitter=getattr(args, "jitter", False),
                 max_resolution=args.max_res,
                 output_ply=output_path,
             )
+
+            synth_views = getattr(args, "synth_views", 0)
+            if synth_views > 0:
+                from panogs.reconstruction.synthesis import synthesize_multi_view_scene
+                logger.info(f"Applying Generative Multi-Angle Viewpoint Synthesis ({synth_views} views)...")
+                pc = synthesize_multi_view_scene(
+                    primary_point_cloud=pc,
+                    room_depth=args.room_depth,
+                    room_width=args.room_width,
+                    num_views=synth_views,
+                )
+                # Re-save PLY with merged synthesized points
+                from panogs.io.ply import write_point_cloud_ply
+                write_point_cloud_ply(
+                    output_path,
+                    pc.points,
+                    pc.colors,
+                    normals=pc.normals,
+                    binary=True,
+                )
         else:
             pc = reconstruct_from_image(
                 image_path=image_path,

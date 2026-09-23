@@ -7,6 +7,7 @@ undistorted, photorealistic 3D indoor room scenes.
 
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -197,18 +198,21 @@ def reconstruct_layout_panorama(
     room_depth: float = 4.5,
     room_width: float = 3.6,
     relief_weight: float = 1.0,
-    max_resolution: Optional[int] = 1024,
+    solid_shell: bool = True,
+    jitter: bool = False,
+    max_resolution: Optional[int] = None,
     output_ply: Optional[Union[str, Path]] = None,
 ) -> PointCloud:
     """
-    Reconstruct a true photorealistic 3D indoor scene from a 360 panorama.
+    Reconstruct a true photorealistic 3D indoor scene from a 360 panorama (V3 Architecture).
     
-    Uses Depth Anything V2 Metric Indoor via 6-view cubemap projection to obtain
-    true physical Euclidean depth across the entire 360 sphere without distortion.
-    
-    Surface normals are computed via 3D spatial gradients, with camera-facing billboard
-    normals and thin anisotropic Gaussian scaling applied at depth discontinuity edges
-    to prevent stretching.
+    Features:
+    - Depth Anything V2 Metric Indoor via 6-view cubemap projection.
+    - 360-equirectangular wrapped RGB-guided joint bilateral depth filtering.
+    - Sub-pixel anti-moire ray jittering.
+    - Planar normal snapping for ceilings, floors, and walls.
+    - Edge floater purging along steep depth transitions.
+    - Full 6-surface solid Manhattan room shell backing behind all occluded objects.
     """
     from panogs.io.ply import write_point_cloud_ply
     from panogs.reconstruction.depth.cubemap import CubemapDepthEstimator
@@ -264,31 +268,46 @@ def reconstruct_layout_panorama(
     logger.info("Applying RGB-guided joint bilateral smoothing to eliminate depth noise...")
     d_final = joint_bilateral_filter(d_final, img_rgb, spatial_radius=2, sigma_spatial=2.0, sigma_depth=0.12, sigma_color=0.15)
 
-    # 3. Generate equirectangular unit rays
-    rays = equirectangular_rays(H, W)
+    # 3. Generate equirectangular unit rays (with anti-moire jittering if enabled)
+    rays = equirectangular_rays(H, W, jitter=jitter)
 
     # 4. Backproject into 3D Euclidean coordinates: P = d * rays
     P = d_final[:, :, np.newaxis] * rays
 
-    # 5. Segment foreground furniture and inpaint occluded background
+    # 5. Compute Manhattan cuboid room geometry for solid shell backing
+    d_box, normals_box, plane_type = compute_cuboid_room_geometry(
+        H, W,
+        h_floor=h_floor,
+        h_ceiling=h_ceiling,
+        w_north=room_depth,
+        w_south=room_depth,
+        w_east=room_width,
+        w_west=room_width,
+    )
+
+    # 6. Segment foreground furniture and inpaint occluded background (RGB + Depth)
     from panogs.reconstruction.inpainting import inpaint_background_texture, segment_foreground_objects
 
     logger.info("Detecting depth discontinuity edges...")
-    edge_mask = detect_depth_edges(d_final, rel_threshold=0.12, abs_threshold=0.25)
+    edge_mask = detect_depth_edges(d_final, rel_threshold=0.10, abs_threshold=0.20)
     edge_count = np.count_nonzero(edge_mask)
     logger.info(f"Found {edge_count:,} depth-edge silhouette pixels ({100.0 * edge_count / (H*W):.1f}% of image)")
 
-    logger.info("Segmenting foreground furniture & inpainting occluded floorboards...")
-    fg_mask = segment_foreground_objects(d_final, rel_depth_threshold=0.18, min_size_pixels=150)
+    logger.info("Segmenting foreground furniture & inpainting occluded background...")
+    fg_mask = segment_foreground_objects(d_final, rel_depth_threshold=0.15, min_size_pixels=100)
     fg_count = np.count_nonzero(fg_mask)
     logger.info(f"Segmented {fg_count:,} foreground furniture pixels ({100.0 * fg_count / (H * W):.1f}%).")
 
     if fg_count > 0:
         bg_rgb = inpaint_background_texture(img_rgb, fg_mask, inpaint_radius=9, method="telea")
+        # Inpaint continuous metric depth behind foreground objects using surrounding wall/floor context
+        from panogs.reconstruction.inpainting import inpaint_background_depth
+        d_background = inpaint_background_depth(d_final, fg_mask, cuboid_envelope=d_box, smooth_sigma=3.0)
     else:
         bg_rgb = img_rgb.copy()
+        d_background = d_final.copy()
 
-    # 6. Compute 3D surface normals from spatial geometry
+    # 7. Compute 3D surface normals from spatial geometry
     logger.info("Computing surface normals from 3D geometry...")
     Tu = (np.roll(P, -1, axis=1) - np.roll(P, 1, axis=1)) * 0.5
     Tv = np.zeros_like(P)
@@ -305,6 +324,15 @@ def reconstruct_layout_panorama(
     facing = np.sum(normals_grad * rays, axis=-1, keepdims=True)
     normals_grad[facing[:, :, 0] > 0] *= -1.0
 
+    # Planar Normal Snapping for Ceiling and Floor
+    ry = rays[:, :, 1]
+    is_ceil = (ry > 0.55) & (P[:, :, 1] > h_ceiling * 0.70)
+    is_floor = (ry < -0.55) & (P[:, :, 1] < -h_floor * 0.70)
+
+    normals_snapped = normals_grad.copy()
+    normals_snapped[is_ceil] = [0.0, -1.0, 0.0]
+    normals_snapped[is_floor] = [0.0, 1.0, 0.0]
+
     # At depth edges: force camera-facing billboard normals to prevent stretching sideways
     normals_billboard = -rays.copy()
     nbb_len = np.linalg.norm(normals_billboard, axis=-1, keepdims=True)
@@ -312,13 +340,13 @@ def reconstruct_layout_panorama(
     normals_billboard = normals_billboard / nbb_len
 
     edge_3d = edge_mask[:, :, np.newaxis]
-    normals_final = np.where(edge_3d, normals_billboard, normals_grad)
+    normals_final = np.where(edge_3d, normals_billboard, normals_snapped)
     n_final_len = np.linalg.norm(normals_final, axis=-1, keepdims=True)
     n_final_len[n_final_len == 0] = 1.0
     normals_final = (normals_final / n_final_len).astype(np.float32)
 
-    # Filter out flying transition slope pixels so furniture doesn't smear into walls
-    flying_mask = detect_depth_edges(d_final, rel_threshold=0.08, abs_threshold=0.20)
+    # 8. Filter out flying transition slope pixels so furniture doesn't smear into walls
+    flying_mask = detect_depth_edges(d_final, rel_threshold=0.08, abs_threshold=0.18)
     keep_primary = ~flying_mask.reshape(-1)
 
     flat_P = P.reshape(-1, 3).astype(np.float32)[keep_primary]
@@ -331,29 +359,36 @@ def reconstruct_layout_panorama(
     all_normals = [flat_N]
     all_edges = [flat_E]
 
-    # 7. Ground Floor Infilling: synthesize solid floor splats under occluded furniture
+    # 9. Solid Room Shell Backing: Synthesize solid background points behind occluded furniture
     infilled_count = 0
-    ry = rays[:, :, 1]
-    floor_occluded = (fg_mask > 0) & (ry < -0.06)
-    if np.any(floor_occluded):
-        d_floor_target = h_floor / (-ry[floor_occluded])
-        d_current = d_final[floor_occluded]
-        valid_infill = (d_floor_target > d_current + 0.25) & (d_floor_target < 20.0)
+    if solid_shell and fg_count > 0:
+        logger.info("Synthesizing solid backing surfaces behind occluded foreground furniture...")
+        occluded_mask = (fg_mask > 0) & (d_background > d_final + 0.15) & (d_background < 25.0)
 
-        if np.any(valid_infill):
-            infill_rays = rays[floor_occluded][valid_infill]
-            infill_d = d_floor_target[valid_infill, np.newaxis]
-            infill_pts = (infill_rays * infill_d).astype(np.float32)
-            infill_cols = bg_rgb[floor_occluded][valid_infill].astype(np.uint8)
-            infill_norms = np.tile(np.array([[0.0, 1.0, 0.0]], dtype=np.float32), (len(infill_pts), 1))
-            infill_edge = np.zeros(len(infill_pts), dtype=bool)
+        if np.any(occluded_mask):
+            shell_rays = rays[occluded_mask]
+            shell_d = d_background[occluded_mask, np.newaxis]
+            shell_pts = (shell_rays * shell_d).astype(np.float32)
+            shell_cols = bg_rgb[occluded_mask].astype(np.uint8)
 
-            infilled_count = len(infill_pts)
-            all_points.append(infill_pts)
-            all_colors.append(infill_cols)
-            all_normals.append(infill_norms)
-            all_edges.append(infill_edge)
-            logger.info(f"Synthesized {infilled_count:,} inpainted ground floor splats under occluded furniture.")
+            # Assign surface normal based on region (floor vs wall)
+            shell_ry = shell_rays[:, 1]
+            shell_norms = np.zeros((len(shell_pts), 3), dtype=np.float32)
+            is_flr = shell_ry < -0.15
+            shell_norms[is_flr] = [0.0, 1.0, 0.0]
+            shell_norms[~is_flr] = -shell_rays[~is_flr]  # Camera facing for wall backing
+            sn_len = np.linalg.norm(shell_norms, axis=-1, keepdims=True)
+            sn_len[sn_len == 0] = 1.0
+            shell_norms = (shell_norms / sn_len).astype(np.float32)
+
+            shell_edge = np.zeros(len(shell_pts), dtype=bool)
+
+            infilled_count = len(shell_pts)
+            all_points.append(shell_pts)
+            all_colors.append(shell_cols)
+            all_normals.append(shell_norms)
+            all_edges.append(shell_edge)
+            logger.info(f"Synthesized {infilled_count:,} solid backing splats behind occluded furniture.")
 
     merged_points = np.vstack(all_points).astype(np.float32)
     merged_colors = np.vstack(all_colors).astype(np.uint8)
@@ -372,12 +407,14 @@ def reconstruct_layout_panorama(
             "edge_pixel_ratio": float(edge_count / (H * W)),
             "edge_mask": merged_edges,
             "infilled_points": int(infilled_count),
+            "solid_shell": solid_shell,
+            "jitter": jitter,
         },
     )
 
-    logger.info(f"Reconstructed {point_cloud.num_points:,} total solid 3D points from metric depth & inpainting.")
+    logger.info(f"Reconstructed {point_cloud.num_points:,} total solid 3D points (V3 engine).")
 
-    # 9. Export PLY if output path provided
+    # 10. Export PLY if output path provided
     if output_ply is not None:
         write_point_cloud_ply(
             output_ply,

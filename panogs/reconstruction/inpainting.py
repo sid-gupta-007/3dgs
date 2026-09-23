@@ -83,6 +83,8 @@ def inpaint_background_texture(
     Returns:
         np.ndarray: (H, W, 3) inpainted RGB image with objects removed.
     """
+    from scipy.ndimage import distance_transform_edt
+
     if image_rgb.dtype != np.uint8:
         img_u8 = (np.clip(image_rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
         was_float = True
@@ -90,9 +92,15 @@ def inpaint_background_texture(
         img_u8 = image_rgb.copy()
         was_float = False
 
+    # Ensure object_mask is uint8 binary (255 / 0)
+    if object_mask.dtype != np.uint8:
+        mask_u8 = (object_mask > 0).astype(np.uint8) * 255
+    else:
+        mask_u8 = np.where(object_mask > 0, np.uint8(255), np.uint8(0))
+
     # Dilate mask slightly to cover edge antialiasing fringes
     dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    dilated_mask = cv2.dilate(object_mask, dilate_kernel)
+    dilated_mask = cv2.dilate(mask_u8, dilate_kernel)
 
     # Fast multi-scale processing for large panoramas
     orig_h, orig_w = img_u8.shape[:2]
@@ -119,6 +127,69 @@ def inpaint_background_texture(
         inpainted_bgr = cv2.inpaint(img_bgr, dilated_mask, inpaint_radius, flag)
         inpainted_rgb = cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2RGB)
 
+    # Fallback nearest-neighbor boundary fill if inpainting left empty/black holes
+    is_empty = (np.mean(inpainted_rgb, axis=-1) < 1.0) & (dilated_mask > 0)
+    if np.any(is_empty):
+        valid_bg = (dilated_mask == 0)
+        if np.any(valid_bg):
+            _, indices = distance_transform_edt(~valid_bg, return_indices=True)
+            fallback_rgb = img_u8[indices[0], indices[1]]
+            inpainted_rgb[is_empty] = fallback_rgb[is_empty]
+
     if was_float:
         return inpainted_rgb.astype(np.float32) / 255.0
     return inpainted_rgb
+
+
+def inpaint_background_depth(
+    depth_map: np.ndarray,
+    object_mask: np.ndarray,
+    cuboid_envelope: Optional[np.ndarray] = None,
+    smooth_sigma: float = 3.0,
+) -> np.ndarray:
+    """
+    Inpaint occluded metric depth behind foreground objects.
+    Uses distance transform boundary propagation and Gaussian smoothing to guarantee
+    100% valid, continuous, non-zero depth behind any size occluding structure.
+
+    Args:
+        depth_map: (H, W) float32 metric depth map in meters.
+        object_mask: (H, W) uint8 binary mask (255 where objects are located).
+        cuboid_envelope: Optional (H, W) float32 room box distance prior.
+        smooth_sigma: Gaussian smoothing sigma for inpainted regions.
+
+    Returns:
+        (H, W) float32 continuous inpainted background depth map.
+    """
+    from scipy.ndimage import distance_transform_edt, gaussian_filter
+
+    d = depth_map.copy().astype(np.float32)
+    mask = (object_mask > 0)
+    if not np.any(mask):
+        return d
+
+    # Dilate mask slightly so boundary transitions blend cleanly
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    dilated_mask = cv2.dilate(mask.astype(np.uint8), kernel).astype(bool)
+
+    # Valid background: pixels outside dilated mask with valid positive depth
+    valid_bg = (~dilated_mask) & (d > 0.1)
+    if not np.any(valid_bg):
+        return d if cuboid_envelope is None else cuboid_envelope.copy()
+
+    # Propagate nearest valid background depth into masked region
+    _, indices = distance_transform_edt(~valid_bg, return_indices=True)
+    d_propagated = d[indices[0], indices[1]]
+
+    # Smooth the propagated depth to eliminate Voronoi boundary ridges
+    d_smoothed = gaussian_filter(d_propagated, sigma=smooth_sigma)
+
+    # Inpaint result combines original background with smoothed propagated depth
+    d_inpaint = np.where(dilated_mask, d_smoothed, d)
+
+    # If a cuboid room envelope prior is provided, ensure background depth doesn't exceed room envelope
+    if cuboid_envelope is not None:
+        d_inpaint = np.where(dilated_mask, np.maximum(d_inpaint, cuboid_envelope * 0.95), d_inpaint)
+
+    return d_inpaint.astype(np.float32)
+

@@ -89,7 +89,7 @@ def test_initialize_from_pointcloud():
     scales = model.get_scaling()
     assert scales.shape == (8, 3)
     assert np.all(scales > 0.0)
-    assert np.all(scales < 1.0)
+    assert np.all(scales < 2.0)
 
     # Test legacy scale_multiplier=1.0 with sharpness=0.0
     model_legacy = initialize_from_pointcloud(pc, default_opacity=0.8, k_scale_neighbors=3, scale_multiplier=1.0, sharpness=0.0)
