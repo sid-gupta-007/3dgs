@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PanoGS 3D Gaussian Splatting Explorer (Three.js)</title>
+    <title>PanoGS V2 — High-Fidelity 3D Gaussian Splatting Explorer</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -11,12 +11,14 @@
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <style>
         :root {
-            --bg-base: #0a0b10;
-            --panel-bg: rgba(18, 20, 30, 0.82);
-            --panel-border: rgba(255, 255, 255, 0.1);
+            --bg-base: #08090e;
+            --panel-bg: rgba(15, 17, 26, 0.86);
+            --panel-border: rgba(255, 255, 255, 0.12);
             --accent: #6366f1;
             --accent-hover: #4f46e5;
-            --accent-glow: rgba(99, 102, 241, 0.35);
+            --accent-glow: rgba(99, 102, 241, 0.4);
+            --accent-green: #10b981;
+            --accent-cyan: #38bdf8;
             --text-primary: #f8fafc;
             --text-secondary: #94a3b8;
             --text-muted: #64748b;
@@ -51,17 +53,17 @@
         /* Glassmorphic Overlays */
         .glass-panel {
             background: var(--panel-bg);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
             border: 1px solid var(--panel-border);
             border-radius: var(--radius-lg);
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
         }
 
         /* Top Header */
         header {
             position: absolute;
-            top: 20px;
+            top: 18px;
             left: 20px;
             padding: 10px 18px;
             display: flex;
@@ -99,8 +101,8 @@
         }
 
         .badge {
-            background: rgba(99, 102, 241, 0.18);
-            border: 1px solid rgba(99, 102, 241, 0.4);
+            background: rgba(99, 102, 241, 0.2);
+            border: 1px solid rgba(99, 102, 241, 0.45);
             color: #a5b4fc;
             font-size: 11px;
             font-weight: 600;
@@ -113,9 +115,9 @@
         /* Stats HUD (Top Right) */
         .stats-hud {
             position: absolute;
-            top: 20px;
+            top: 18px;
             right: 20px;
-            padding: 10px 16px;
+            padding: 10px 18px;
             display: flex;
             gap: 18px;
             font-family: 'JetBrains Mono', monospace;
@@ -136,23 +138,31 @@
         }
 
         .stat-val {
-            color: #38bdf8;
+            color: var(--accent-cyan);
             font-weight: 600;
         }
 
         /* Side Controls Panel */
         .controls-panel {
             position: absolute;
-            top: 85px;
+            top: 80px;
             left: 20px;
-            width: 310px;
+            width: 320px;
             padding: 18px;
             display: flex;
             flex-direction: column;
-            gap: 14px;
+            gap: 13px;
             z-index: 10;
-            max-height: calc(100vh - 110px);
+            max-height: calc(100vh - 105px);
             overflow-y: auto;
+        }
+
+        .controls-panel::-webkit-scrollbar {
+            width: 5px;
+        }
+        .controls-panel::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
         }
 
         .section-title {
@@ -162,6 +172,9 @@
             text-transform: uppercase;
             letter-spacing: 0.8px;
             margin-bottom: 2px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
         }
 
         .control-group {
@@ -173,13 +186,14 @@
         .label-row {
             display: flex;
             justify-content: space-between;
-            font-size: 13px;
+            font-size: 12px;
             color: var(--text-secondary);
         }
 
         .label-row span.val {
             font-family: 'JetBrains Mono', monospace;
             color: var(--text-primary);
+            font-weight: 500;
         }
 
         input[type="range"] {
@@ -212,8 +226,14 @@
             gap: 8px;
         }
 
+        .btn-group-3 {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+        }
+
         button {
-            padding: 9px 12px;
+            padding: 8px 10px;
             border-radius: var(--radius-md);
             border: 1px solid var(--panel-border);
             background: rgba(255, 255, 255, 0.05);
@@ -227,10 +247,11 @@
             align-items: center;
             justify-content: center;
             gap: 6px;
+            text-align: center;
         }
 
         button:hover {
-            background: rgba(99, 102, 241, 0.3);
+            background: rgba(99, 102, 241, 0.28);
             border-color: var(--accent);
             box-shadow: 0 0 12px var(--accent-glow);
         }
@@ -238,19 +259,20 @@
         button.active {
             background: var(--accent);
             border-color: var(--accent);
-            box-shadow: 0 0 12px var(--accent-glow);
+            box-shadow: 0 0 14px var(--accent-glow);
+            color: #ffffff;
         }
 
         /* Help bar (Bottom) */
         .bottom-bar {
             position: absolute;
-            bottom: 20px;
+            bottom: 18px;
             left: 50%;
             transform: translateX(-50%);
             padding: 8px 20px;
             display: flex;
             align-items: center;
-            gap: 18px;
+            gap: 16px;
             font-size: 12px;
             color: var(--text-secondary);
             z-index: 10;
@@ -264,7 +286,7 @@
 
         kbd {
             background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.18);
             padding: 2px 6px;
             border-radius: 4px;
             font-family: 'JetBrains Mono', monospace;
@@ -288,8 +310,8 @@
         }
 
         .spinner {
-            width: 44px;
-            height: 44px;
+            width: 46px;
+            height: 46px;
             border: 3px solid rgba(99, 102, 241, 0.2);
             border-top-color: var(--accent);
             border-radius: 50%;
@@ -306,7 +328,7 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(10, 11, 16, 0.85);
+            background: rgba(8, 9, 14, 0.88);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -339,7 +361,7 @@
                 <h1>PanoGS Explorer</h1>
             </div>
         </div>
-        <div class="badge" id="view-mode-badge">Three.js Engine</div>
+        <div class="badge" id="view-mode-badge">WebGL Three.js + Octree LOD</div>
     </header>
 
     <!-- Stats HUD -->
@@ -349,8 +371,12 @@
             <span class="stat-val" id="fps-val">60</span>
         </div>
         <div class="stat-item">
-            <span class="stat-label">Gaussians</span>
-            <span class="stat-val" id="splat-count">Loading...</span>
+            <span class="stat-label">Visible Splats</span>
+            <span class="stat-val" id="visible-count">--</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Total Splats</span>
+            <span class="stat-val" id="splat-count" style="color: var(--text-secondary);">Loading...</span>
         </div>
         <div class="stat-item">
             <span class="stat-label">Camera</span>
@@ -364,7 +390,16 @@
 
     <!-- Controls Panel -->
     <div class="controls-panel glass-panel">
-        <div class="section-title">Navigation Mode</div>
+        <!-- Quality Presets -->
+        <div class="section-title">Quality Presets (Aholo LOD)</div>
+        <div class="btn-group-3">
+            <button id="preset-crisp" class="active">💎 Crisp</button>
+            <button id="preset-balanced">⚖️ Balanced</button>
+            <button id="preset-fast">⚡ High FPS</button>
+        </div>
+
+        <!-- Navigation Mode -->
+        <div class="section-title" style="margin-top: 4px;">Navigation Mode</div>
         <div class="btn-group" style="grid-template-columns: 1fr;">
             <button id="btn-lock-fps">🔒 Enter FPS View (Click Viewport)</button>
         </div>
@@ -376,23 +411,53 @@
             <button id="btn-toggle-collision" class="active">🛡️ Walk & Collision (ON)</button>
         </div>
 
-        <div class="section-title" style="margin-top: 6px;">Movement & Speed</div>
+        <!-- Sharpness & Quality Tuning (Phase 1 & 2) -->
+        <div class="section-title" style="margin-top: 4px;">Sharpness & LOD Engine</div>
+
+        <div class="control-group">
+            <div class="label-row">
+                <span>Sharpness Boost</span>
+                <span class="val" id="sharpness-label">1.0x</span>
+            </div>
+            <input type="range" id="sharpness-slider" min="0.0" max="2.0" step="0.05" value="1.0">
+        </div>
+
+        <div class="control-group">
+            <div class="label-row">
+                <span>Splat Scale Multiplier</span>
+                <span class="val" id="scale-label">1.00x</span>
+            </div>
+            <input type="range" id="scale-slider" min="0.1" max="2.5" step="0.05" value="1.0">
+        </div>
+
+        <div class="control-group">
+            <div class="label-row">
+                <span>Max Splat Radius</span>
+                <span class="val" id="max-radius-label">256 px</span>
+            </div>
+            <input type="range" id="max-radius-slider" min="48" max="512" step="8" value="256">
+        </div>
+
+        <div class="control-group">
+            <div class="label-row">
+                <span>Detail Culling (Sub-Pixel)</span>
+                <span class="val" id="detail-culling-label">0.40 px²</span>
+            </div>
+            <input type="range" id="detail-culling-slider" min="0.0" max="2.5" step="0.05" value="0.4">
+        </div>
+
+        <div class="btn-group" style="margin-top: 2px; grid-template-columns: 1fr;">
+            <button id="btn-toggle-lod" class="active">🌲 Octree Spatial LOD (ON)</button>
+        </div>
+
+        <!-- Movement & Camera -->
+        <div class="section-title" style="margin-top: 4px;">Camera & Movement</div>
         <div class="control-group">
             <div class="label-row">
                 <span>Move Speed</span>
                 <span class="val" id="speed-label">1.0x</span>
             </div>
             <input type="range" id="speed-slider" min="0.2" max="3.0" step="0.1" value="1.0">
-        </div>
-
-        <div class="section-title" style="margin-top: 6px;">Viewport Settings</div>
-        
-        <div class="control-group">
-            <div class="label-row">
-                <span>Splat Scale</span>
-                <span class="val" id="scale-label">1.0x</span>
-            </div>
-            <input type="range" id="scale-slider" min="0.1" max="3.0" step="0.05" value="1.0">
         </div>
 
         <div class="control-group">
@@ -411,7 +476,8 @@
             <input type="range" id="alpha-slider" min="0.0" max="0.5" step="0.01" value="0.01">
         </div>
 
-        <div class="section-title" style="margin-top: 6px;">Environment</div>
+        <!-- Environment -->
+        <div class="section-title" style="margin-top: 4px;">Environment</div>
         <div class="btn-group">
             <button id="bg-dark" class="active">Pitch Dark</button>
             <button id="bg-gray">Studio Gray</button>
@@ -419,47 +485,48 @@
             <button id="bg-blue">Deep Space</button>
         </div>
 
-        <div class="section-title" style="margin-top: 6px;">Helpers & Actions</div>
+        <!-- Actions -->
+        <div class="section-title" style="margin-top: 4px;">Helpers & Actions</div>
         <div class="btn-group">
             <button id="btn-grid">Toggle Grid Floor</button>
             <button id="btn-center">Center Room</button>
         </div>
         <div class="btn-group" style="margin-top: 6px; grid-template-columns: 1fr;">
-            <button id="btn-snap">Capture High-Res Snapshot</button>
+            <button id="btn-snap">📸 Capture 4K Snapshot</button>
         </div>
     </div>
 
     <!-- Bottom Help Bar -->
     <div class="bottom-bar glass-panel">
-        <div class="key-hint"><kbd>Viewport Click</kbd> <span>Lock Mouse FPS</span></div>
-        <div class="key-hint"><kbd>W A S D</kbd> Walk & Slide Around Obstacles</div>
+        <div class="key-hint"><kbd>Click</kbd> <span>Lock Mouse FPS</span></div>
+        <div class="key-hint"><kbd>W A S D</kbd> Walk & Slide</div>
         <div class="key-hint"><kbd>Space</kbd> Jump</div>
         <div class="key-hint"><kbd>C</kbd> Crouch</div>
         <div class="key-hint"><kbd>Shift</kbd> Sprint</div>
-        <div class="key-hint"><kbd>V</kbd> Toggle Collision</div>
-        <div class="key-hint"><kbd>ESC</kbd> Unlock Mouse</div>
+        <div class="key-hint"><kbd>V</kbd> Collision</div>
+        <div class="key-hint"><kbd>ESC</kbd> Unlock</div>
     </div>
 
     <!-- Loading Spinner -->
     <div id="loader">
         <div class="spinner"></div>
-        <p style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">Loading 3D Gaussian Splats via Three.js...</p>
+        <p style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">Loading 3D Gaussian Splats...</p>
     </div>
 
     <script>
-        // Three.js Gaussian Splatting Engine
+        // Three.js High-Fidelity Gaussian Splatting Engine with Octree LOD
         const container = document.getElementById("canvas-container");
 
         // 1. Scene & Renderer Setup
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x0a0b10);
+        scene.background = new THREE.Color(0x08090e);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 100);
         camera.position.set(0, 0, 0.01);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", preserveDrawingBuffer: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.0));
         container.appendChild(renderer.domElement);
 
         // Grid helper
@@ -481,15 +548,20 @@
         let splatMesh = null;
         let splatGeometry = null;
 
+        // Visual Quality Parameters
         let splatScaleMult = 1.0;
+        let sharpnessBoost = 1.0;
+        let maxPixelRadius = 256.0;
+        let detailCullingThreshold = 0.40;
         let minAlphaCutoff = 0.01;
         let moveSpeedMult = 1.0;
+        let lodEnabled = true;
 
         let cameraYaw = 0.0;
         let cameraPitch = 0.0;
         let cameraPos = [0.0, 0.0, 0.0];
 
-        // Raw Buffers for Radix Depth Sorting
+        // Buffers for Sorting & Octree LOD
         let rawSplatBytes = null;
         let rawPositions = null;
         let sortedSplatBytes = null;
@@ -497,6 +569,142 @@
         let lastSortedEye = [0, 0, 0];
         let lastSortedYaw = -999;
         let lastSortedPitch = -999;
+
+        // Active visible indices after frustum + LOD selection
+        let activeIndices = new Int32Array(0);
+        let activeCount = 0;
+
+        // Frustum helper
+        const projScreenMatrix = new THREE.Matrix4();
+        const frustum = new THREE.Frustum();
+
+        // ─────────────────────────────────────────────────────────────
+        // Spatial Octree for Runtime Level-of-Detail & Frustum Culling
+        // ─────────────────────────────────────────────────────────────
+        class OctreeNode {
+            constructor(minX, minY, minZ, maxX, maxY, maxZ, depth) {
+                this.min = [minX, minY, minZ];
+                this.max = [maxX, maxY, maxZ];
+                this.center = [
+                    (minX + maxX) * 0.5,
+                    (minY + maxY) * 0.5,
+                    (minZ + maxZ) * 0.5
+                ];
+                const dx = maxX - minX;
+                const dy = maxY - minY;
+                const dz = maxZ - minZ;
+                this.radius = Math.hypot(dx, dy, dz) * 0.5;
+                this.depth = depth;
+                this.indices = [];
+                this.children = null;
+                this.sphere = new THREE.Sphere(new THREE.Vector3(...this.center), this.radius);
+            }
+
+            subdivide(positions, maxDepth, maxPointsPerLeaf) {
+                if (this.depth >= maxDepth || this.indices.length <= maxPointsPerLeaf) {
+                    return;
+                }
+
+                const [cx, cy, cz] = this.center;
+                const [minX, minY, minZ] = this.min;
+                const [maxX, maxY, maxZ] = this.max;
+
+                this.children = [
+                    new OctreeNode(minX, minY, minZ, cx, cy, cz, this.depth + 1),
+                    new OctreeNode(cx, minY, minZ, maxX, cy, cz, this.depth + 1),
+                    new OctreeNode(minX, cy, minZ, cx, maxY, cz, this.depth + 1),
+                    new OctreeNode(cx, cy, minZ, maxX, maxY, cz, this.depth + 1),
+                    new OctreeNode(minX, minY, cz, cx, cy, maxZ, this.depth + 1),
+                    new OctreeNode(cx, minY, cz, maxX, cy, maxZ, this.depth + 1),
+                    new OctreeNode(minX, cy, cz, cx, maxY, maxZ, this.depth + 1),
+                    new OctreeNode(cx, cy, cz, maxX, maxY, maxZ, this.depth + 1),
+                ];
+
+                for (let i = 0; i < this.indices.length; i++) {
+                    const idx = this.indices[i];
+                    const px = positions[idx * 3 + 0];
+                    const py = positions[idx * 3 + 1];
+                    const pz = positions[idx * 3 + 2];
+
+                    const childIdx = (px >= cx ? 1 : 0) | (py >= cy ? 2 : 0) | (pz >= cz ? 4 : 0);
+                    this.children[childIdx].indices.push(idx);
+                }
+
+                this.indices = null; // Free parent index array
+
+                for (let c = 0; c < 8; c++) {
+                    this.children[c].subdivide(positions, maxDepth, maxPointsPerLeaf);
+                }
+            }
+
+            gatherLOD(eyeX, eyeY, eyeZ, frustum, outList, isLodActive) {
+                // 1. Frustum Culling
+                if (!frustum.intersectsSphere(this.sphere)) {
+                    return;
+                }
+
+                // 2. If leaf node: apply distance LOD
+                if (this.children === null) {
+                    if (!this.indices || this.indices.length === 0) return;
+
+                    let stride = 1;
+                    if (isLodActive) {
+                        const dist = Math.hypot(eyeX - this.center[0], eyeY - this.center[1], eyeZ - this.center[2]);
+                        if (dist > 14.0) {
+                            stride = 4; // LOD 2: 25% splats
+                        } else if (dist > 7.0) {
+                            stride = 2; // LOD 1: 50% splats
+                        } else {
+                            stride = 1; // LOD 0: 100% full detail
+                        }
+                    }
+
+                    const len = this.indices.length;
+                    for (let i = 0; i < len; i += stride) {
+                        outList.push(this.indices[i]);
+                    }
+                    return;
+                }
+
+                // 3. Recurse into children
+                for (let c = 0; c < 8; c++) {
+                    this.children[c].gatherLOD(eyeX, eyeY, eyeZ, frustum, outList, isLodActive);
+                }
+            }
+        }
+
+        let octreeRoot = null;
+
+        function buildSpatialOctree(positions, num) {
+            if (num <= 0) return;
+
+            let minX = Infinity, minY = Infinity, minZ = Infinity;
+            let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+            for (let i = 0; i < num; i++) {
+                const x = positions[i * 3 + 0];
+                const y = positions[i * 3 + 1];
+                const z = positions[i * 3 + 2];
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+                if (z < minZ) minZ = z;
+                if (z > maxZ) maxZ = z;
+            }
+
+            // Expand slightly
+            minX -= 0.1; minY -= 0.1; minZ -= 0.1;
+            maxX += 0.1; maxY += 0.1; maxZ += 0.1;
+
+            octreeRoot = new OctreeNode(minX, minY, minZ, maxX, maxY, maxZ, 0);
+            octreeRoot.indices = new Array(num);
+            for (let i = 0; i < num; i++) {
+                octreeRoot.indices[i] = i;
+            }
+
+            octreeRoot.subdivide(positions, 4, 20000);
+        }
 
         function toggleCollision() {
             collisionEnabled = !collisionEnabled;
@@ -543,7 +751,9 @@
             }
         });
 
-        // Vertex Shader: Projected 2D Gaussian Ellipse
+        // ─────────────────────────────────────────────────────────────
+        // Vertex Shader: Projected 2D Gaussian Ellipse with Sharp Clamps
+        // ─────────────────────────────────────────────────────────────
         const vsSource = `
             attribute vec3 a_position;
             attribute vec3 a_scale;
@@ -553,6 +763,9 @@
             uniform float u_scale_mult;
             uniform float u_focal;
             uniform vec2 u_viewport;
+            uniform float u_max_pixel_radius;
+            uniform float u_min_pixel_radius;
+            uniform float u_sharpness_boost;
 
             varying vec4 v_color;
             varying vec3 v_conic;
@@ -605,15 +818,18 @@
                 mat3x2 T = J * W;
                 mat3x2 TS = T * Sigma;
                 mat2 V = TS * transpose(T);
-                V[0][0] += 0.3;
-                V[1][1] += 0.3;
+
+                // Anti-Aliasing Lowpass Padding: Reduced by Sharpness Booster to eliminate blanket blur
+                float pad = mix(0.24, 0.06, clamp(u_sharpness_boost * 0.7, 0.0, 1.0));
+                V[0][0] += pad;
+                V[1][1] += pad;
 
                 float a = V[0][0];
                 float b = V[0][1];
                 float c = V[1][1];
 
                 float det = a * c - b * b;
-                if (det <= 0.0001) {
+                if (det <= 0.00005) {
                     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
                     return;
                 }
@@ -622,9 +838,23 @@
 
                 float mid = 0.5 * (a + c);
                 float diff = 0.5 * (a - c);
-                float term = sqrt(max(0.01, diff * diff + b * b));
+                float term = sqrt(max(0.001, diff * diff + b * b));
                 float lambda1 = mid + term;
-                float lambda2 = max(0.01, mid - term);
+                float lambda2 = max(0.001, mid - term);
+
+                // Screen-space radius at 3.0σ (Aholo uses ~2.83σ)
+                float r1 = 3.0 * sqrt(max(0.05, lambda1));
+                float r2 = 3.0 * sqrt(max(0.05, lambda2));
+
+                // Detail Culling: Skip negligible sub-pixel Gaussians (< threshold)
+                if (r1 * r2 < u_min_pixel_radius) {
+                    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+                    return;
+                }
+
+                // Max Pixel Radius Clamp: prevents giant splat smear across screen
+                r1 = min(u_max_pixel_radius, r1);
+                r2 = min(u_max_pixel_radius, r2);
 
                 vec2 v1 = vec2(b, lambda1 - a);
                 float v1_len = length(v1);
@@ -634,9 +864,6 @@
                     v1 = v1 / v1_len;
                 }
                 vec2 v2 = vec2(-v1.y, v1.x);
-
-                float r1 = min(400.0, 3.0 * sqrt(max(0.1, lambda1)));
-                float r2 = min(400.0, 3.0 * sqrt(max(0.1, lambda2)));
 
                 vec2 offset_pix = position.x * v1 * r1 + position.y * v2 * r2;
                 v_screen_offset = offset_pix;
@@ -675,15 +902,18 @@
             }
         `;
 
-        // Radix Depth Sorting
+        // ─────────────────────────────────────────────────────────────
+        // Frustum Culling + Octree LOD + Radix Depth Sorting
+        // ─────────────────────────────────────────────────────────────
         function updateDepthSort() {
-            if (numGaussians === 0 || !rawPositions || !splatMesh) return;
+            if (numGaussians === 0 || !rawPositions || !splatMesh || !octreeRoot) return;
 
             const eye = camera.position;
             const distMoved = Math.hypot(eye.x - lastSortedEye[0], eye.y - lastSortedEye[1], eye.z - lastSortedEye[2]);
             const angleDiff = Math.abs(cameraYaw - lastSortedYaw) + Math.abs(cameraPitch - lastSortedPitch);
 
-            if (distMoved < 0.03 && angleDiff < 0.3 && lastSortedYaw !== -999) {
+            // Skip sorting if stationary
+            if (distMoved < 0.02 && angleDiff < 0.25 && lastSortedYaw !== -999) {
                 return;
             }
 
@@ -691,7 +921,25 @@
             lastSortedYaw = cameraYaw;
             lastSortedPitch = cameraPitch;
 
-            // View direction Z vector
+            // 1. Update Camera View Frustum
+            projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+            frustum.setFromProjectionMatrix(projScreenMatrix);
+
+            // 2. Gather visible active splats from Spatial Octree
+            const visibleList = [];
+            octreeRoot.gatherLOD(eye.x, eye.y, eye.z, frustum, visibleList, lodEnabled);
+            activeCount = visibleList.length;
+
+            if (activeCount === 0) {
+                splatGeometry.instanceCount = 0;
+                document.getElementById("visible-count").textContent = `0 / ${numGaussians.toLocaleString()} (0%)`;
+                return;
+            }
+
+            const pct = ((activeCount / numGaussians) * 100).toFixed(0);
+            document.getElementById("visible-count").textContent = `${activeCount.toLocaleString()} (${pct}%)`;
+
+            // 3. View Direction Z Vector for depth projection
             const mat = camera.matrixWorldInverse.elements;
             const vzX = mat[2];
             const vzY = mat[6];
@@ -700,9 +948,10 @@
             let minD = Infinity;
             let maxD = -Infinity;
 
-            for (let i = 0; i < numGaussians; i++) {
-                const idx = i * 3;
-                const d = vzX * rawPositions[idx] + vzY * rawPositions[idx + 1] + vzZ * rawPositions[idx + 2];
+            for (let i = 0; i < activeCount; i++) {
+                const idx = visibleList[i];
+                const posIdx = idx * 3;
+                const d = vzX * rawPositions[posIdx] + vzY * rawPositions[posIdx + 1] + vzZ * rawPositions[posIdx + 2];
                 sortDepths[i] = d;
                 if (d < minD) minD = d;
                 if (d > maxD) maxD = d;
@@ -710,10 +959,10 @@
 
             const range = Math.max(1e-4, maxD - minD);
             const count = new Uint32Array(65536);
-            const keys = new Uint16Array(numGaussians);
+            const keys = new Uint16Array(activeCount);
 
-            // Furthest distance gets smallest key -> back-to-front rendering
-            for (let i = 0; i < numGaussians; i++) {
+            // 4. Furthest distance gets smallest key -> back-to-front rendering
+            for (let i = 0; i < activeCount; i++) {
                 const k = Math.min(65535, Math.max(0, Math.floor(((maxD - sortDepths[i]) / range) * 65535)));
                 keys[i] = k;
                 count[k]++;
@@ -726,17 +975,18 @@
                 sum += count[i];
             }
 
-            const sortedIndices = new Int32Array(numGaussians);
-            for (let i = 0; i < numGaussians; i++) {
+            const sortedActive = new Int32Array(activeCount);
+            for (let i = 0; i < activeCount; i++) {
                 const k = keys[i];
-                sortedIndices[starts[k]++] = i;
+                sortedActive[starts[k]++] = visibleList[i];
             }
 
+            // 5. Populate sorted bytes only for active instances
             const srcU32 = new Uint32Array(rawSplatBytes.buffer);
             const dstU32 = new Uint32Array(sortedSplatBytes.buffer);
 
-            for (let i = 0; i < numGaussians; i++) {
-                const srcOffset = sortedIndices[i] * 8;
+            for (let i = 0; i < activeCount; i++) {
+                const srcOffset = sortedActive[i] * 8;
                 const dstOffset = i * 8;
                 dstU32[dstOffset]     = srcU32[srcOffset];
                 dstU32[dstOffset + 1] = srcU32[srcOffset + 1];
@@ -748,7 +998,7 @@
                 dstU32[dstOffset + 7] = srcU32[srcOffset + 7];
             }
 
-            // Update Three.js Instanced Attributes
+            // 6. Update Three.js Instanced Attributes
             const attrPos = splatGeometry.getAttribute("a_position");
             const attrScale = splatGeometry.getAttribute("a_scale");
             const attrColor = splatGeometry.getAttribute("a_color");
@@ -757,7 +1007,7 @@
             const sortedF32 = new Float32Array(sortedSplatBytes.buffer);
             const sortedU8 = new Uint8Array(sortedSplatBytes.buffer);
 
-            for (let i = 0; i < numGaussians; i++) {
+            for (let i = 0; i < activeCount; i++) {
                 const baseF32 = i * 8;
                 const baseU8 = i * 32;
 
@@ -771,9 +1021,14 @@
             attrScale.needsUpdate = true;
             attrColor.needsUpdate = true;
             attrQuat.needsUpdate = true;
+
+            // Only render visible instances!
+            splatGeometry.instanceCount = activeCount;
         }
 
-        // Load Splat Data
+        // ─────────────────────────────────────────────────────────────
+        // Load Splat Buffer & Construct Geometry + Octree
+        // ─────────────────────────────────────────────────────────────
         async function loadSplatBuffer(buffer) {
             const bytesPerGaussian = 32;
             numGaussians = Math.floor(buffer.byteLength / bytesPerGaussian);
@@ -795,8 +1050,11 @@
                 rawPositions[i * 3 + 2] = srcF32[i * 8 + 2];
             }
 
-            // Build Spatial Collision Obstacle Grid for solid objects (tables, chairs, pillars, walls)
+            // Build Spatial Collision Obstacle Grid for solid objects
             buildObstacleGrid(rawPositions, numGaussians);
+
+            // Build Spatial Octree for fast LOD and frustum culling
+            buildSpatialOctree(rawPositions, numGaussians);
 
             // Create Three.js Instanced Buffer Geometry
             splatGeometry = new THREE.InstancedBufferGeometry();
@@ -857,6 +1115,9 @@
                     u_focal: { value: focal },
                     u_viewport: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
                     u_min_alpha: { value: minAlphaCutoff },
+                    u_max_pixel_radius: { value: maxPixelRadius },
+                    u_min_pixel_radius: { value: detailCullingThreshold },
+                    u_sharpness_boost: { value: sharpnessBoost },
                 },
                 transparent: true,
                 depthWrite: false,
@@ -876,7 +1137,9 @@
             updateCamPosHUD();
         }
 
+        // ─────────────────────────────────────────────────────────────
         // Spatial Collision Grid & Physical Sliding Engine
+        // ─────────────────────────────────────────────────────────────
         let collisionEnabled = true;
         let floorY = -1.4;
         let eyeHeight = 1.6;
@@ -902,11 +1165,10 @@
             const p05Idx = Math.floor(yVals.length * 0.05);
             floorY = yVals[p05Idx];
 
-            // Obstacles: solid splats between floor + 0.45m and floor + 1.85m (tables, chairs, sofa backs, pillars, walls)
+            // Obstacles: solid splats between floor + 0.45m and floor + 1.85m
             const obsMinY = floorY + 0.45;
             const obsMaxY = floorY + 1.85;
 
-            // Count point density per horizontal cell
             const cellCounts = new Map();
             for (let i = 0; i < num; i++) {
                 const y = positions[i * 3 + 1];
@@ -914,7 +1176,6 @@
                     const x = positions[i * 3 + 0];
                     const z = positions[i * 3 + 2];
                     
-                    // Exclude guaranteed spawn clearance zone around origin (0, 0)
                     if (x * x + z * z < SPAWN_CLEAR_RADIUS * SPAWN_CLEAR_RADIUS) {
                         continue;
                     }
@@ -926,7 +1187,6 @@
                 }
             }
 
-            // Only mark dense solid clusters as physical obstacles
             for (const [key, count] of cellCounts.entries()) {
                 if (count >= MIN_POINTS_FOR_SOLID) {
                     obstacleCells.add(key);
@@ -968,13 +1228,11 @@
             let effDx = dx;
             let effDz = dz;
 
-            // Check obstacle near target position
             const targetX = curX + effDx;
             const targetZ = curZ + effDz;
             const obs = findNearestObstacle(targetX, targetZ, checkRad);
 
             if (obs && obs.dist < checkRad) {
-                // Outward normal from obstacle center to player
                 let nx = targetX - obs.x;
                 let nz = targetZ - obs.z;
                 const len = Math.hypot(nx, nz);
@@ -983,16 +1241,12 @@
                     nx /= len;
                     nz /= len;
 
-                    // Projection of movement vector onto obstacle normal
                     const dot = effDx * nx + effDz * nz;
-
-                    // If moving into the obstacle, subtract normal component for smooth tangent slide
                     if (dot < 0) {
                         effDx -= dot * nx;
                         effDz -= dot * nz;
                     }
 
-                    // Push-out penetration resolution if too close
                     const penetration = checkRad - obs.dist;
                     if (penetration > 0) {
                         effDx += nx * Math.min(penetration * 0.4, 0.05);
@@ -1054,16 +1308,94 @@
             updateCamPosHUD();
         };
 
-        // UI Sliders
-        document.getElementById("speed-slider").addEventListener("input", e => {
-            moveSpeedMult = parseFloat(e.target.value);
-            document.getElementById("speed-label").textContent = moveSpeedMult.toFixed(1) + "x";
+        // ─────────────────────────────────────────────────────────────
+        // Quality Presets
+        // ─────────────────────────────────────────────────────────────
+        function applyPreset(sharpness, scale, maxRadius, culling, lod, btnId) {
+            sharpnessBoost = sharpness;
+            splatScaleMult = scale;
+            maxPixelRadius = maxRadius;
+            detailCullingThreshold = culling;
+            lodEnabled = lod;
+
+            document.getElementById("sharpness-slider").value = sharpness;
+            document.getElementById("sharpness-label").textContent = sharpness.toFixed(2) + "x";
+
+            document.getElementById("scale-slider").value = scale;
+            document.getElementById("scale-label").textContent = scale.toFixed(2) + "x";
+
+            document.getElementById("max-radius-slider").value = maxRadius;
+            document.getElementById("max-radius-label").textContent = maxRadius.toFixed(0) + " px";
+
+            document.getElementById("detail-culling-slider").value = culling;
+            document.getElementById("detail-culling-label").textContent = culling.toFixed(2) + " px²";
+
+            const lodBtn = document.getElementById("btn-toggle-lod");
+            lodBtn.classList.toggle("active", lodEnabled);
+            lodBtn.textContent = lodEnabled ? "🌲 Octree Spatial LOD (ON)" : "⚡ Full Detail / LOD (OFF)";
+
+            document.querySelectorAll("#preset-crisp, #preset-balanced, #preset-fast").forEach(b => b.classList.remove("active"));
+            document.getElementById(btnId).classList.add("active");
+
+            if (splatMesh) {
+                splatMesh.material.uniforms.u_sharpness_boost.value = sharpnessBoost;
+                splatMesh.material.uniforms.u_scale_mult.value = splatScaleMult;
+                splatMesh.material.uniforms.u_max_pixel_radius.value = maxPixelRadius;
+                splatMesh.material.uniforms.u_min_pixel_radius.value = detailCullingThreshold;
+            }
+            lastSortedYaw = -999;
+        }
+
+        document.getElementById("preset-crisp").onclick = () => {
+            applyPreset(1.2, 0.95, 384.0, 0.2, true, "preset-crisp");
+        };
+
+        document.getElementById("preset-balanced").onclick = () => {
+            applyPreset(1.0, 1.0, 256.0, 0.4, true, "preset-balanced");
+        };
+
+        document.getElementById("preset-fast").onclick = () => {
+            applyPreset(0.8, 1.1, 128.0, 1.2, true, "preset-fast");
+        };
+
+        // ─────────────────────────────────────────────────────────────
+        // Sliders & Controls
+        // ─────────────────────────────────────────────────────────────
+        document.getElementById("sharpness-slider").addEventListener("input", e => {
+            sharpnessBoost = parseFloat(e.target.value);
+            document.getElementById("sharpness-label").textContent = sharpnessBoost.toFixed(2) + "x";
+            if (splatMesh) splatMesh.material.uniforms.u_sharpness_boost.value = sharpnessBoost;
         });
 
         document.getElementById("scale-slider").addEventListener("input", e => {
             splatScaleMult = parseFloat(e.target.value);
             document.getElementById("scale-label").textContent = splatScaleMult.toFixed(2) + "x";
             if (splatMesh) splatMesh.material.uniforms.u_scale_mult.value = splatScaleMult;
+        });
+
+        document.getElementById("max-radius-slider").addEventListener("input", e => {
+            maxPixelRadius = parseFloat(e.target.value);
+            document.getElementById("max-radius-label").textContent = maxPixelRadius.toFixed(0) + " px";
+            if (splatMesh) splatMesh.material.uniforms.u_max_pixel_radius.value = maxPixelRadius;
+        });
+
+        document.getElementById("detail-culling-slider").addEventListener("input", e => {
+            detailCullingThreshold = parseFloat(e.target.value);
+            document.getElementById("detail-culling-label").textContent = detailCullingThreshold.toFixed(2) + " px²";
+            if (splatMesh) splatMesh.material.uniforms.u_min_pixel_radius.value = detailCullingThreshold;
+        });
+
+        document.getElementById("btn-toggle-lod").onclick = () => {
+            lodEnabled = !lodEnabled;
+            const btn = document.getElementById("btn-toggle-lod");
+            btn.classList.toggle("active", lodEnabled);
+            btn.textContent = lodEnabled ? "🌲 Octree Spatial LOD (ON)" : "⚡ Full Detail / LOD (OFF)";
+            lastSortedYaw = -999;
+        };
+
+        document.getElementById("speed-slider").addEventListener("input", e => {
+            moveSpeedMult = parseFloat(e.target.value);
+            document.getElementById("speed-label").textContent = moveSpeedMult.toFixed(1) + "x";
         });
 
         document.getElementById("fov-slider").addEventListener("input", e => {
@@ -1089,7 +1421,7 @@
             document.querySelectorAll("#bg-dark, #bg-gray, #bg-white, #bg-blue").forEach(b => b.classList.remove("active"));
             activeBtn.classList.add("active");
         }
-        document.getElementById("bg-dark").onclick = (e) => setBg(0x0a0b10, e.target);
+        document.getElementById("bg-dark").onclick = (e) => setBg(0x08090e, e.target);
         document.getElementById("bg-gray").onclick = (e) => setBg(0x22252e, e.target);
         document.getElementById("bg-white").onclick = (e) => setBg(0xf5f5f7, e.target);
         document.getElementById("bg-blue").onclick = (e) => setBg(0x05091a, e.target);
@@ -1109,7 +1441,7 @@
 
         document.getElementById("btn-snap").onclick = () => {
             const link = document.createElement("a");
-            link.download = "panogs_threejs_snapshot.png";
+            link.download = "panogs_v2_sharp_snapshot.png";
             link.href = renderer.domElement.toDataURL("image/png");
             link.click();
         };
@@ -1128,7 +1460,9 @@
             }
         });
 
+        // ─────────────────────────────────────────────────────────────
         // Animation & Render Loop
+        // ─────────────────────────────────────────────────────────────
         let lastTime = performance.now();
         let frameCount = 0;
         let lastFrameTime = performance.now();
@@ -1240,7 +1574,7 @@
                 updateCamPosHUD();
             }
 
-            // Real-Time Radix Depth Sorting
+            // Real-Time Frustum Culling + LOD + Radix Depth Sorting
             updateDepthSort();
 
             renderer.render(scene, camera);

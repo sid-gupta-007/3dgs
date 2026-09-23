@@ -24,19 +24,31 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
         logger = get_logger("viewer.server")
 
         if self.path == "/" or self.path.startswith("/index.html"):
+            html_path = Path(__file__).parent / "index.html"
+            if html_path.exists():
+                with open(html_path, "r", encoding="utf-8") as f:
+                    content = f.read().encode("utf-8")
+            else:
+                content = self.html_content.encode("utf-8")
+
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(self.html_content.encode("utf-8"))))
+            self.send_header("Content-Length", str(len(content)))
             self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
             self.end_headers()
-            self.wfile.write(self.html_content.encode("utf-8"))
+            self.wfile.write(content)
 
         elif self.path == "/api/scene.splat":
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Length", str(len(self.model_bytes)))
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
             self.end_headers()
             self.wfile.write(self.model_bytes)
 

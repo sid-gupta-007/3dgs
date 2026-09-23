@@ -150,6 +150,45 @@ def detect_depth_edges(
     return dilated
 
 
+def joint_bilateral_filter(
+    depth: np.ndarray,
+    guide_rgb: np.ndarray,
+    spatial_radius: int = 2,
+    sigma_spatial: float = 2.0,
+    sigma_depth: float = 0.15,
+    sigma_color: float = 0.18,
+) -> np.ndarray:
+    """
+    Apply joint bilateral filter to smooth monocular depth noise while strictly preserving sharp object edges.
+    Handles spherical 360 equirectangular horizontal wrapping automatically.
+    """
+    smoothed = np.zeros_like(depth)
+    weights_sum = np.zeros_like(depth)
+
+    # Normalize RGB to [0, 1]
+    rgb_norm = guide_rgb.astype(np.float32) / 255.0
+
+    for dy in range(-spatial_radius, spatial_radius + 1):
+        for dx in range(-spatial_radius, spatial_radius + 1):
+            spatial_w = np.exp(-(dx * dx + dy * dy) / (2.0 * sigma_spatial * sigma_spatial))
+
+            # Horizontal equirectangular wrap (axis=1), vertical clamped wrap (axis=0)
+            shifted_d = np.roll(np.roll(depth, dy, axis=0), dx, axis=1)
+            shifted_rgb = np.roll(np.roll(rgb_norm, dy, axis=0), dx, axis=1)
+
+            # Depth difference penalty & color difference penalty
+            d_diff = np.abs(depth - shifted_d)
+            c_diff = np.linalg.norm(rgb_norm - shifted_rgb, axis=-1)
+
+            range_w = np.exp(-((d_diff / max(1e-3, sigma_depth)) ** 2 + (c_diff / max(1e-3, sigma_color)) ** 2))
+            w = spatial_w * range_w
+
+            smoothed += shifted_d * w
+            weights_sum += w
+
+    return (smoothed / np.maximum(weights_sum, 1e-6)).astype(np.float32)
+
+
 def reconstruct_layout_panorama(
     image_path: Union[str, Path],
     depth_estimator: Optional[DepthEstimator] = None,
@@ -221,6 +260,10 @@ def reconstruct_layout_panorama(
         norm_inv = (inv - inv_min) / (inv_max - inv_min)
         d_final = (0.6 + 8.0 * norm_inv).astype(np.float32)
 
+    # Apply RGB-Guided Joint Bilateral Filtering to eliminate depth wobbles while keeping crisp edges
+    logger.info("Applying RGB-guided joint bilateral smoothing to eliminate depth noise...")
+    d_final = joint_bilateral_filter(d_final, img_rgb, spatial_radius=2, sigma_spatial=2.0, sigma_depth=0.12, sigma_color=0.15)
+
     # 3. Generate equirectangular unit rays
     rays = equirectangular_rays(H, W)
 
@@ -289,6 +332,7 @@ def reconstruct_layout_panorama(
     all_edges = [flat_E]
 
     # 7. Ground Floor Infilling: synthesize solid floor splats under occluded furniture
+    infilled_count = 0
     ry = rays[:, :, 1]
     floor_occluded = (fg_mask > 0) & (ry < -0.06)
     if np.any(floor_occluded):
@@ -304,11 +348,12 @@ def reconstruct_layout_panorama(
             infill_norms = np.tile(np.array([[0.0, 1.0, 0.0]], dtype=np.float32), (len(infill_pts), 1))
             infill_edge = np.zeros(len(infill_pts), dtype=bool)
 
+            infilled_count = len(infill_pts)
             all_points.append(infill_pts)
             all_colors.append(infill_cols)
             all_normals.append(infill_norms)
             all_edges.append(infill_edge)
-            logger.info(f"Synthesized {len(infill_pts):,} inpainted ground floor splats under occluded furniture.")
+            logger.info(f"Synthesized {infilled_count:,} inpainted ground floor splats under occluded furniture.")
 
     merged_points = np.vstack(all_points).astype(np.float32)
     merged_colors = np.vstack(all_colors).astype(np.uint8)
@@ -326,7 +371,7 @@ def reconstruct_layout_panorama(
             "edge_pixel_count": int(edge_count),
             "edge_pixel_ratio": float(edge_count / (H * W)),
             "edge_mask": merged_edges,
-            "infilled_points": int(len(merged_points) - H * W),
+            "infilled_points": int(infilled_count),
         },
     )
 

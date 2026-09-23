@@ -59,10 +59,11 @@ def initialize_from_pointcloud(
     point_cloud: PointCloud,
     default_opacity: float = 0.92,
     k_scale_neighbors: int = 8,
-    scale_multiplier: float = 1.0,
+    scale_multiplier: float = 0.65,
     min_scale: float = 1e-4,
     max_scale: float = 10.0,
     splat_shape: str = "hybrid",
+    sharpness: float = 0.7,
 ) -> GaussianModel:
     """
     Initialize a 3D Gaussian Splatting scene model from a PointCloud.
@@ -76,6 +77,7 @@ def initialize_from_pointcloud(
     - Rotations: Quaternions aligned to surface normals (or identity if normals absent).
     - Opacity: Initialized to default_opacity in logit space.
     - Colors: RGB [0, 255] converted to float [0, 1] and mapped to zeroth-order spherical harmonics (SH0).
+    - sharpness: 0.0 = legacy soft splats, 1.0 = ultra-tight splats (default 0.7).
     """
     logger = get_logger("gaussian.init")
     N = point_cloud.num_points
@@ -83,12 +85,13 @@ def initialize_from_pointcloud(
     if N == 0:
         raise ValueError("Cannot initialize GaussianModel from an empty PointCloud.")
 
-    logger.info(f"Initializing {N:,} 3D Gaussians (shape='{splat_shape}') from point cloud...")
+    sharpness = float(np.clip(sharpness, 0.0, 1.0))
+    logger.info(f"Initializing {N:,} 3D Gaussians (shape='{splat_shape}', sharpness={sharpness:.2f}) from point cloud...")
 
     # 1. Positions: (N, 3)
     xyz = point_cloud.points.copy()
 
-    # 2. Adaptive Scales with k-NN and Angular Ray Footprint Capping
+    # 2. Adaptive Scales with k-NN, outlier capping, and Angular Ray Footprint Capping
     logger.info(f"Computing adaptive scales for {N:,} points...")
     tree = cKDTree(xyz)
     k_query = min(k_scale_neighbors + 1, N)
@@ -102,6 +105,12 @@ def initialize_from_pointcloud(
 
     # Avoid zero distances for co-located points
     base_scales[base_scales <= 0.0] = 0.01
+
+    # Cap outlier k-NN distances at 3× median to prevent blown-out splats
+    median_scale = float(np.median(base_scales))
+    outlier_cap = median_scale * 3.0
+    base_scales = np.minimum(base_scales, outlier_cap)
+
     adaptive_scales = np.clip(base_scales, min_scale, max_scale).astype(np.float32)
 
     # For structured panorama point clouds: cap scale by ray angular footprint to prevent blur across depth steps
@@ -109,8 +118,15 @@ def initialize_from_pointcloud(
         point_depths = np.linalg.norm(xyz, axis=-1)
         total_pixels = point_cloud.metadata["total_pixels"]
         angular_pixel = (2.0 * np.pi) / max(1, int(np.sqrt(total_pixels) * 2))
-        max_angular_scale = point_depths * angular_pixel * 1.05 * scale_multiplier
+        # Tighter angular cap: reduce from 1.05 to lerp(1.05, 0.75, sharpness)
+        angular_mult = 1.05 * (1.0 - sharpness) + 0.75 * sharpness
+        max_angular_scale = point_depths * angular_pixel * angular_mult * scale_multiplier
         adaptive_scales = np.minimum(adaptive_scales, np.maximum(max_angular_scale, min_scale).astype(np.float32))
+
+    logger.info(
+        f"Scale stats: median={median_scale:.5f}m, outlier_cap={outlier_cap:.5f}m, "
+        f"after_clip: mean={np.mean(adaptive_scales):.5f}m, max={np.max(adaptive_scales):.5f}m"
+    )
 
     # 3. Orientations and Anisotropic Scales from Surface Normals
     shape_mode = splat_shape.lower().strip()
@@ -144,32 +160,39 @@ def initialize_from_pointcloud(
         edge_mask = point_cloud.metadata.get("edge_mask", None) if point_cloud.metadata else None
         is_edge = np.asarray(edge_mask, dtype=bool) if (edge_mask is not None and len(edge_mask) == N) else np.zeros(N, dtype=bool)
 
+        # Sharpness-aware scale factors: lerp between old (soft) and new (tight) values
+        # Old factors: sx=1.02, sy=1.02   New factors: sx=0.72, sy=0.72
+        # Old surfel: sx=1.05, sy=1.05    New surfel: sx=0.78, sy=0.78
+        def _lerp(soft, tight):
+            return soft * (1.0 - sharpness) + tight * sharpness
+
         if shape_mode in ("cylindrical", "needle", "pointy"):
             # Needle / Cylindrical splats: elongated along tangent t1, tight along t2 and normal
-            sx = adaptive_scales * 1.80
-            sy = np.clip(adaptive_scales * 0.35, min_scale, max_scale)
-            sz = np.clip(adaptive_scales * 0.12, min_scale, max_scale)
+            sx = adaptive_scales * _lerp(1.80, 1.30)
+            sy = np.clip(adaptive_scales * _lerp(0.35, 0.20), min_scale, max_scale)
+            sz = np.clip(adaptive_scales * _lerp(0.12, 0.06), min_scale, max_scale)
         elif shape_mode == "surfel":
             # Flat planar surfel discs
-            sx = adaptive_scales * 1.05
-            sy = adaptive_scales * 1.05
-            sz = np.clip(adaptive_scales * 0.12, min_scale, max_scale)
+            sx = adaptive_scales * _lerp(1.05, 0.78)
+            sy = adaptive_scales * _lerp(1.05, 0.78)
+            sz = np.clip(adaptive_scales * _lerp(0.12, 0.05), min_scale, max_scale)
         else:
             # Hybrid: surfel discs for flat walls/floors + pointy cylindrical needles for pillars/edges
-            sx = adaptive_scales * 1.02
-            sy = adaptive_scales * 1.02
-            sz = np.clip(adaptive_scales * 0.15, min_scale, max_scale)
+            sx = adaptive_scales * _lerp(1.02, 0.72)
+            sy = adaptive_scales * _lerp(1.02, 0.72)
+            sz = np.clip(adaptive_scales * _lerp(0.15, 0.06), min_scale, max_scale)
 
             # Pointy cylindrical needles at edge contours and pillars
             if np.any(is_edge):
-                sx[is_edge] = adaptive_scales[is_edge] * 1.60
-                sy[is_edge] = np.clip(adaptive_scales[is_edge] * 0.30, min_scale, max_scale)
-                sz[is_edge] = np.clip(adaptive_scales[is_edge] * 0.05, min_scale, max_scale)
+                sx[is_edge] = adaptive_scales[is_edge] * _lerp(1.60, 1.10)
+                sy[is_edge] = np.clip(adaptive_scales[is_edge] * _lerp(0.30, 0.15), min_scale, max_scale)
+                sz[is_edge] = np.clip(adaptive_scales[is_edge] * _lerp(0.05, 0.02), min_scale, max_scale)
 
         scales = np.stack([sx, sy, sz], axis=-1).astype(np.float32)
     else:
         # Isotropic initial scales (s, s, s)
-        scales = np.stack([adaptive_scales] * 3, axis=-1).astype(np.float32)
+        iso_factor = 1.0 * (1.0 - sharpness) + 0.70 * sharpness
+        scales = np.stack([adaptive_scales * iso_factor] * 3, axis=-1).astype(np.float32)
         rotation_quats = np.zeros((N, 4), dtype=np.float32)
         rotation_quats[:, 0] = 1.0  # Identity quaternion (qw=1, qx=0, qy=0, qz=0)
 

@@ -225,6 +225,71 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional maximum image dimension for downscaling",
     )
+    recon_parser.add_argument(
+        "--splat",
+        action="store_true",
+        default=True,
+        help="Automatically initialize 3D Gaussians and export WebGL .splat and 3DGS .ply (default: True)",
+    )
+    recon_parser.add_argument(
+        "--no-splat",
+        dest="splat",
+        action="store_false",
+        help="Do not export 3D Gaussians (point cloud PLY only)",
+    )
+    recon_parser.add_argument(
+        "--shape",
+        type=str,
+        default="hybrid",
+        choices=["hybrid", "cylindrical", "needle", "surfel", "isotropic"],
+        help="Geometric shape of 3D Gaussians: 'hybrid', 'cylindrical'/'needle', 'surfel', or 'isotropic' (default: hybrid)",
+    )
+    recon_parser.add_argument(
+        "--sharpness",
+        type=float,
+        default=0.7,
+        help="Gaussian sharpness factor [0.0 = soft, 1.0 = ultra-tight] (default: 0.7)",
+    )
+    recon_parser.add_argument(
+        "--scale-factor",
+        type=float,
+        default=0.65,
+        help="Multiplier on adaptive k-NN spacing (default: 0.65)",
+    )
+    recon_parser.add_argument(
+        "--opacity",
+        type=float,
+        default=0.92,
+        help="Initial opacity in (0, 1) (default: 0.92)",
+    )
+
+    # ─────────────────────────────────────────────────────────────
+    # Subcommand: pano (Shorthand for end-to-end panorama reconstruction)
+    # ─────────────────────────────────────────────────────────────
+    pano_parser = subparsers.add_parser(
+        "pano",
+        help="End-to-end reconstruction from 360 panorama to 3D Gaussian Splat (.splat & .ply)",
+        description="Run complete pipeline: depth estimation, Manhattan cuboid layout, inpainting, and sharp 3DGS export.",
+    )
+    pano_parser.add_argument("image_path", type=str, help="Path to input 360 panorama (JPG, PNG)")
+    pano_parser.add_argument("-o", "--output", type=str, default="output/scene.ply", help="Output path (default: output/scene.ply)")
+    pano_parser.add_argument("-m", "--model", type=str, default="cubemap_depth_anything", help="Depth model (default: cubemap_depth_anything)")
+    pano_parser.add_argument("--camera", type=str, default="spherical", choices=["spherical"], help="Camera projection (default: spherical)")
+    pano_parser.add_argument("--min-depth", type=float, default=0.5, help="Minimum scene depth in meters (default: 0.5)")
+    pano_parser.add_argument("--max-depth", type=float, default=8.0, help="Maximum scene depth in meters (default: 8.0)")
+    pano_parser.add_argument("--layout", action="store_true", default=True, help="Use layout-guided cuboid geometry (default: True)")
+    pano_parser.add_argument("--no-layout", dest="layout", action="store_false", help="Disable layout-guided geometry")
+    pano_parser.add_argument("--floor-height", type=float, default=1.5, help="Floor height in meters (default: 1.5)")
+    pano_parser.add_argument("--ceiling-height", type=float, default=1.8, help="Ceiling height in meters (default: 1.8)")
+    pano_parser.add_argument("--room-depth", type=float, default=4.5, help="Room depth in meters (default: 4.5)")
+    pano_parser.add_argument("--room-width", type=float, default=4.0, help="Room width in meters (default: 4.0)")
+    pano_parser.add_argument("--max-res", type=int, default=None, help="Maximum image resolution")
+    pano_parser.add_argument("--splat", action="store_true", default=True, help="Export WebGL .splat (default: True)")
+    pano_parser.add_argument("--no-splat", dest="splat", action="store_false", help="Disable .splat export")
+    pano_parser.add_argument("--shape", type=str, default="hybrid", choices=["hybrid", "cylindrical", "needle", "surfel", "isotropic"], help="Gaussian shape (default: hybrid)")
+    pano_parser.add_argument("--sharpness", type=float, default=0.7, help="Sharpness factor [0.0-1.0] (default: 0.7)")
+    pano_parser.add_argument("--scale-factor", type=float, default=0.65, help="Scale multiplier (default: 0.65)")
+    pano_parser.add_argument("--opacity", type=float, default=0.92, help="Initial opacity (default: 0.92)")
 
     # ─────────────────────────────────────────────────────────────
     # Subcommand: video
@@ -341,14 +406,20 @@ def build_parser() -> argparse.ArgumentParser:
     gauss_parser.add_argument(
         "--opacity",
         type=float,
-        default=0.8,
-        help="Initial opacity in (0, 1) (default: 0.8)",
+        default=0.92,
+        help="Initial opacity in (0, 1) (default: 0.92)",
     )
     gauss_parser.add_argument(
         "--scale-factor",
         type=float,
-        default=1.0,
-        help="Multiplier on adaptive k-NN spacing (default: 1.0)",
+        default=0.65,
+        help="Multiplier on adaptive k-NN spacing (default: 0.65)",
+    )
+    gauss_parser.add_argument(
+        "--sharpness",
+        type=float,
+        default=0.7,
+        help="Gaussian sharpness factor [0.0 = soft, 1.0 = ultra-tight] (default: 0.7)",
     )
     gauss_parser.add_argument(
         "--shape",
@@ -360,7 +431,8 @@ def build_parser() -> argparse.ArgumentParser:
     gauss_parser.add_argument(
         "--splat",
         action="store_true",
-        help="Also export a fast WebGL .splat binary file",
+        default=True,
+        help="Also export a fast WebGL .splat binary file (default: True)",
     )
 
     # ─────────────────────────────────────────────────────────────
@@ -625,7 +697,28 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
         print(f"  Input Image:     {image_path}")
         print(f"  Points:          {pc.num_points:,}")
         print(f"  Bounding Box:    [{min_b[0]:.2f}, {min_b[1]:.2f}, {min_b[2]:.2f}] to [{max_b[0]:.2f}, {max_b[1]:.2f}, {max_b[2]:.2f}]")
-        print(f"  Output PLY:      {output_path}\n")
+        print(f"  Output PLY:      {output_path}")
+
+        if getattr(args, "splat", True):
+            splat_path = output_path.with_suffix(".splat")
+            gauss_path = output_path.with_name(f"{output_path.stem}_gaussians.ply")
+            shape = getattr(args, "shape", "hybrid")
+            sharpness = getattr(args, "sharpness", 0.7)
+            scale_factor = getattr(args, "scale_factor", 0.65)
+            opacity = getattr(args, "opacity", 0.92)
+            logger.info(f"Initializing 3D Gaussians (shape='{shape}', sharpness={sharpness:.2f}, scale={scale_factor:.2f}) from reconstructed point cloud...")
+            model = initialize_from_pointcloud(
+                point_cloud=pc,
+                default_opacity=opacity,
+                scale_multiplier=scale_factor,
+                splat_shape=shape,
+                sharpness=sharpness,
+            )
+            save_gaussian_ply(gauss_path, model)
+            save_gaussian_splat(splat_path, model)
+            print(f"  3DGS PLY:        {gauss_path} ({model.num_gaussians:,} Gaussians)")
+            print(f"  WebGL Splat:     {splat_path}\n")
+
         return 0
     except Exception as e:
         logger.error(f"Reconstruction failed: {e}")
@@ -747,6 +840,7 @@ def handle_init_gaussians(args: argparse.Namespace) -> int:
             default_opacity=args.opacity,
             scale_multiplier=args.scale_factor,
             splat_shape=getattr(args, "shape", "hybrid"),
+            sharpness=getattr(args, "sharpness", 0.7),
         )
 
         save_gaussian_ply(output_path, model)
@@ -762,6 +856,7 @@ def handle_init_gaussians(args: argparse.Namespace) -> int:
         print(f"  Total Gaussians:    {model.num_gaussians:,}")
         print(f"  Scale Range:        [{np.min(scales):.4f}, {np.max(scales):.4f}] (mean: {np.mean(scales):.4f}m)")
         print(f"  Opacity:            {args.opacity:.2f}")
+        print(f"  Sharpness:          {getattr(args, 'sharpness', 0.7):.2f}")
         print(f"  Normals Aligned:    {pc.normals is not None}")
         print(f"  Output 3DGS PLY:    {output_path}\n")
         return 0
@@ -919,7 +1014,7 @@ def main(args: Optional[List[str]] = None) -> int:
         return handle_panorama(parsed_args)
     elif parsed_args.command == "depth":
         return handle_depth(parsed_args)
-    elif parsed_args.command == "reconstruct":
+    elif parsed_args.command in ("reconstruct", "pano"):
         return handle_reconstruct(parsed_args)
     elif parsed_args.command == "video":
         return handle_video(parsed_args)

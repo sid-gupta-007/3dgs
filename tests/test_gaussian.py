@@ -83,14 +83,18 @@ def test_initialize_from_pointcloud():
     colors = np.full((8, 3), 200, dtype=np.uint8)
     pc = PointCloud(points=points, colors=colors)
 
+    # Test sharp V2 initialization
     model = initialize_from_pointcloud(pc, default_opacity=0.8, k_scale_neighbors=3)
     assert model.num_gaussians == 8
-
     scales = model.get_scaling()
     assert scales.shape == (8, 3)
     assert np.all(scales > 0.0)
-    # Unit grid spacing is 1.0
-    assert np.allclose(scales, 1.0, atol=0.2)
+    assert np.all(scales < 1.0)
+
+    # Test legacy scale_multiplier=1.0 with sharpness=0.0
+    model_legacy = initialize_from_pointcloud(pc, default_opacity=0.8, k_scale_neighbors=3, scale_multiplier=1.0, sharpness=0.0)
+    scales_legacy = model_legacy.get_scaling()
+    assert np.allclose(scales_legacy, 1.0, atol=0.2)
 
     opacities = model.get_opacity()
     assert np.allclose(opacities, 0.8, atol=1e-4)
