@@ -198,7 +198,7 @@ def reconstruct_layout_panorama(
     room_depth: float = 4.5,
     room_width: float = 3.6,
     relief_weight: float = 1.0,
-    solid_shell: bool = True,
+    solid_shell: bool = False,
     jitter: bool = False,
     max_resolution: Optional[int] = None,
     output_ply: Optional[Union[str, Path]] = None,
@@ -302,7 +302,7 @@ def reconstruct_layout_panorama(
     fg_count = np.count_nonzero(fg_mask)
     logger.info(f"Segmented {fg_count:,} foreground furniture pixels ({100.0 * fg_count / (H * W):.1f}%).")
 
-    if fg_count > 0:
+    if solid_shell and fg_count > 0:
         bg_rgb = inpaint_background_texture(img_rgb, fg_mask, inpaint_radius=9, method="telea")
         # Inpaint continuous metric depth behind foreground objects using surrounding wall/floor context
         from panogs.reconstruction.inpainting import inpaint_background_depth

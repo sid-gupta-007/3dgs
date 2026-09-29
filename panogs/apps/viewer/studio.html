@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#090b12">
+    <title>PanoGS Studio</title>
+    <style>
+        :root { color-scheme: dark; --bg:#090b12; --muted:#a0abc0; --accent:#7775ff; --cyan:#53d3ff; }
+        * { box-sizing:border-box; }
+        body { min-height:100vh; margin:0; display:grid; place-items:center; padding:28px; color:#f7f8ff; background:radial-gradient(ellipse at 50% 12%,#20244a 0,transparent 48%),var(--bg); font:15px/1.5 "Segoe UI",system-ui,sans-serif; }
+        main { width:min(860px,100%); }
+        .brand { display:flex; align-items:center; justify-content:space-between; margin-bottom:26px; }
+        .brand-name { display:flex; align-items:center; gap:11px; font-size:17px; font-weight:700; letter-spacing:-.3px; }
+        .brand-icon { width:38px;height:38px;display:grid;place-items:center;border-radius:12px;background:linear-gradient(135deg,#726bff,#d14ca7);font-weight:800;box-shadow:0 6px 24px #6966ff45; }
+        .local-tag { color:#a8b3cc;border:1px solid #33394e;border-radius:999px;padding:6px 11px;font-size:12px; }
+        .welcome { padding:clamp(26px,6vw,54px); border:1px solid #ffffff1c; border-radius:26px; background:linear-gradient(145deg,#171b2bf2,#0e111bf5); box-shadow:0 28px 90px #0008; }
+        .eyebrow { color:#aaa8ff;text-transform:uppercase;letter-spacing:1.7px;font-size:11px;font-weight:800; }
+        h1 { margin:12px 0 10px; font-size:clamp(30px,6vw,48px);line-height:1.04;letter-spacing:-1.6px; }
+        .intro { max-width:620px;color:var(--muted);margin:0 0 30px;font-size:15px; }
+        .actions { display:grid;grid-template-columns:1fr 1fr;gap:15px; }
+        .action { min-height:185px;padding:22px;text-align:left;color:inherit;border:1px solid #ffffff20;border-radius:18px;background:#ffffff06;cursor:pointer;transition:.18s ease; }
+        .action:hover:not(:disabled) { transform:translateY(-3px);border-color:#9290ff;background:#7775ff13; }
+        .action.primary { border-color:#7775ff9c;background:linear-gradient(140deg,#7775ff30,#7775ff09); }
+        .action:disabled { opacity:.55;cursor:wait; }
+        .icon { display:block;font-size:27px;margin-bottom:19px; }
+        .action strong { display:block;font-size:17px; }
+        .action small { display:block;margin-top:7px;color:var(--muted);font-size:13px;line-height:1.5; }
+        .footnote { margin:22px 0 0;text-align:center;color:#727f98;font-size:12px; }
+        #status { display:none;margin-top:18px;padding:16px;border:1px solid #343b54;border-radius:14px;background:#0a0d16;color:#dbe4f7; }
+        #status.error { border-color:#793b4a;color:#ffd0d4; }
+        #status.success { border-color:#24634f;color:#c7ffe9; }
+        #status-title { font-weight:650; }
+        #status-detail { display:none;max-height:32vh;overflow:auto;margin:12px 0 0;padding:12px;border-radius:9px;background:#05070c;color:#c3cee1;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 Consolas,monospace; }
+        .progress { display:none;width:100%;height:5px;margin-top:14px;border-radius:6px;background:#252a3c;overflow:hidden; }
+        .progress::after { content:"";display:block;width:35%;height:100%;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--cyan));animation:move 1.25s ease-in-out infinite alternate; }
+        @keyframes move { from{transform:translateX(-5%)}to{transform:translateX(205%)} }
+        .status-actions { display:flex;gap:10px;margin-top:14px;flex-wrap:wrap; }
+        .status-actions a,.status-actions button { padding:9px 13px;border:1px solid #7775ff88;border-radius:9px;background:#7775ff24;color:#fff;text-decoration:none;font:inherit;font-size:13px;font-weight:650;cursor:pointer; }
+        input { display:none; }
+        @media(max-width:620px) { body{padding:16px}.brand{margin-bottom:16px}.welcome{padding:25px 18px}.actions{grid-template-columns:1fr;gap:10px}.action{min-height:135px;padding:17px}.icon{display:inline-block;margin:0 10px 0 0;vertical-align:middle} }
+        @media(prefers-reduced-motion:reduce) { *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important} }
+    </style>
+</head>
+<body>
+<main>
+    <header class="brand">
+        <div class="brand-name"><span class="brand-icon">P</span><span>PanoGS Studio</span></div>
+        <span class="local-tag">Local reconstruction</span>
+    </header>
+    <section class="welcome" aria-labelledby="title">
+        <div class="eyebrow">Panorama → Gaussian PLY</div>
+        <h1 id="title">What would you like to do?</h1>
+        <p class="intro">Create a Gaussian scene from a 360° panorama, or open an existing Gaussian PLY in the SuperSplat editor. This workspace stays focused on processing and file handoff.</p>
+        <div class="actions">
+            <button class="action primary" id="choose-hdr">
+                <span class="icon">🌐</span>
+                <strong>Upload an HDR panorama</strong>
+                <small>Select an .hdr or .exr file. PanoGS will estimate depth and create a Gaussian PLY.</small>
+            </button>
+            <button class="action" id="choose-ply">
+                <span class="icon">🧩</span>
+                <strong>Open a Gaussian PLY</strong>
+                <small>Select a .ply file and open it directly in the SuperSplat editor.</small>
+            </button>
+        </div>
+        <p class="footnote">PanoGS handles reconstruction. SuperSplat handles Gaussian scene viewing and editing.</p>
+        <div id="status" role="status" aria-live="polite">
+            <div id="status-title"></div>
+            <div class="progress" id="progress"></div>
+            <pre id="status-detail"></pre>
+            <div class="status-actions" id="status-actions"></div>
+        </div>
+    </section>
+</main>
+<input id="hdr-picker" type="file" accept=".hdr,.exr,image/vnd.radiance,image/x-exr">
+<input id="ply-picker" type="file" accept=".ply,application/octet-stream">
+<script>
+    const $ = (id) => document.getElementById(id);
+    const hdrPicker = $("hdr-picker");
+    const plyPicker = $("ply-picker");
+    const statusBox = $("status");
+    const statusTitle = $("status-title");
+    const statusDetail = $("status-detail");
+    const progress = $("progress");
+    const actions = $("status-actions");
+    const hdrButton = $("choose-hdr");
+    const plyButton = $("choose-ply");
+
+    function setStatus(title, kind = "", detail = "", busy = false) {
+        statusBox.style.display = "block";
+        statusBox.className = kind;
+        statusTitle.textContent = title;
+        statusDetail.textContent = detail;
+        statusDetail.style.display = detail ? "block" : "none";
+        progress.style.display = busy ? "block" : "none";
+        actions.replaceChildren();
+    }
+
+    function addAction(label, href) {
+        const link = document.createElement("a");
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = label;
+        actions.appendChild(link);
+    }
+
+    async function readJson(response) {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Request failed (" + response.status + ").");
+        return payload;
+    }
+
+    hdrButton.addEventListener("click", () => hdrPicker.click());
+    plyButton.addEventListener("click", () => plyPicker.click());
+
+    hdrPicker.addEventListener("change", async () => {
+        const file = hdrPicker.files[0];
+        hdrPicker.value = "";
+        if (!file) return;
+        if (!/\.(hdr|exr)$/i.test(file.name)) return setStatus("Choose an .hdr or .exr panorama.", "error");
+        if (file.size > 300 * 1024 * 1024) return setStatus("This file exceeds the 300 MiB upload limit.", "error");
+
+        hdrButton.disabled = plyButton.disabled = true;
+        setStatus("Uploading " + file.name + "…", "", "", true);
+        try {
+            const upload = await fetch("/api/reconstruct?filename=" + encodeURIComponent(file.name), {
+                method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file
+            });
+            const jobInfo = await readJson(upload);
+            let job;
+            do {
+                await new Promise(resolve => setTimeout(resolve, 1800));
+                job = await readJson(await fetch(jobInfo.status_url, { cache: "no-store" }));
+                setStatus(job.message, "", "", job.status !== "complete" && job.status !== "failed");
+            } while (job.status !== "complete" && job.status !== "failed");
+
+            if (job.status === "failed") {
+                setStatus(job.message, "error", job.log || "The reconstruction process did not return a detailed log.");
+                return;
+            }
+            const editorUrl = "/supersplat/?content=" + encodeURIComponent("/api/reconstruction/" + job.id + "/gaussian.ply");
+            setStatus("Gaussian PLY created successfully.", "success");
+            addAction("Open result in SuperSplat ↗", editorUrl);
+            addAction("Start another reconstruction", location.pathname);
+        } catch (error) {
+            setStatus(error.message || "The panorama could not be reconstructed.", "error");
+        } finally {
+            hdrButton.disabled = plyButton.disabled = false;
+        }
+    });
+
+    plyPicker.addEventListener("change", async () => {
+        const file = plyPicker.files[0];
+        plyPicker.value = "";
+        if (!file) return;
+        if (!file.name.toLowerCase().endsWith(".ply")) return setStatus("Choose a Gaussian .ply file.", "error");
+        if (file.size > 1024 * 1024 * 1024) return setStatus("This PLY exceeds the 1 GiB upload limit.", "error");
+
+        hdrButton.disabled = plyButton.disabled = true;
+        setStatus("Preparing " + file.name + " for SuperSplat…", "", "", true);
+        try {
+            const response = await fetch("/api/open-ply?filename=" + encodeURIComponent(file.name), {
+                method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file
+            });
+            const result = await readJson(response);
+            setStatus(file.name + " is ready.", "success");
+            addAction("Open in SuperSplat ↗", result.editor_url);
+        } catch (error) {
+            setStatus(error.message || "Could not open this PLY in SuperSplat.", "error");
+        } finally {
+            hdrButton.disabled = plyButton.disabled = false;
+        }
+    });
+</script>
+</body>
+</html>

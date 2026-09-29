@@ -235,13 +235,14 @@ def build_parser() -> argparse.ArgumentParser:
     recon_parser.add_argument(
         "--solid-shell",
         action="store_true",
-        default=True,
-        help="Synthesize 100% solid enclosed room shell backing for all 6 cuboid surfaces (default: True)",
+        default=False,
+        help="Add an inpainted background shell behind segmented foreground objects (default: off)",
     )
     recon_parser.add_argument(
         "--no-solid-shell",
         dest="solid_shell",
         action="store_false",
+        default=False,
         help="Disable solid room shell backing",
     )
     recon_parser.add_argument(
@@ -332,8 +333,8 @@ def build_parser() -> argparse.ArgumentParser:
     pano_parser.add_argument("--ceiling-height", type=float, default=1.8, help="Ceiling height in meters (default: 1.8)")
     pano_parser.add_argument("--room-depth", type=float, default=4.5, help="Room depth in meters (default: 4.5)")
     pano_parser.add_argument("--room-width", type=float, default=4.0, help="Room width in meters (default: 4.0)")
-    pano_parser.add_argument("--solid-shell", action="store_true", default=True, help="Synthesize solid room shell backing (default: True)")
-    pano_parser.add_argument("--no-solid-shell", dest="solid_shell", action="store_false", help="Disable solid room shell backing")
+    pano_parser.add_argument("--solid-shell", action="store_true", default=False, help="Add an inpainted background shell (default: off)")
+    pano_parser.add_argument("--no-solid-shell", dest="solid_shell", action="store_false", default=False, help="Disable the inpainted background shell")
     pano_parser.add_argument("--jitter", action="store_true", default=False, help="Anti-moire ray jittering (default: False)")
     pano_parser.add_argument("--no-jitter", dest="jitter", action="store_false", help="Disable anti-moire ray jittering")
     pano_parser.add_argument("--synth-views", type=int, default=0, help="Novel perspective viewpoints to synthesize for occlusions (default: 0, set e.g. 4 for multi-view rig)")
@@ -635,6 +636,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not automatically open the web browser",
     )
 
+    studio_parser = subparsers.add_parser(
+        "studio",
+        help="Launch PanoGS Studio to upload an HDR panorama and create a Gaussian PLY",
+        description="Open the local reconstruction GUI. Upload an HDR panorama, run the PanoGS CLI pipeline, then inspect the Gaussian PLY in the bundled SuperSplat editor.",
+    )
+    studio_parser.add_argument("-p", "--port", type=int, default=8080, help="Local HTTP server port (default: 8080)")
+    studio_parser.add_argument("--no-browser", action="store_true", help="Do not automatically open the browser")
+
     # ─────────────────────────────────────────────────────────────
     # Subcommand: compress (LightGaussian Importance Pruning)
     # ─────────────────────────────────────────────────────────────
@@ -867,7 +876,7 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
                 h_ceiling=args.ceiling_height,
                 room_depth=args.room_depth,
                 room_width=args.room_width,
-                solid_shell=getattr(args, "solid_shell", True),
+                solid_shell=getattr(args, "solid_shell", False),
                 jitter=getattr(args, "jitter", False),
                 max_resolution=args.max_res,
                 output_ply=output_path,
@@ -1187,6 +1196,20 @@ def handle_view(args: argparse.Namespace) -> int:
         logger.error(f"Scene model file not found: {model_path}")
         return 1
 
+
+def handle_studio(args: argparse.Namespace) -> int:
+    """Launch the upload-first PanoGS reconstruction studio."""
+    try:
+        start_viewer_server(model_path=None, port=args.port, open_browser=not args.no_browser, block=True)
+        return 0
+    except Exception as exc:
+        logger = get_logger("cli.studio")
+        logger.error(f"PanoGS Studio failed: {exc}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
     try:
         start_viewer_server(
             model_path=model_path,
@@ -1362,6 +1385,8 @@ def main(args: Optional[List[str]] = None) -> int:
         return handle_train(parsed_args)
     elif parsed_args.command == "view":
         return handle_view(parsed_args)
+    elif parsed_args.command == "studio":
+        return handle_studio(parsed_args)
     elif parsed_args.command == "compress":
         return handle_compress(parsed_args)
     elif parsed_args.command == "benchmark":

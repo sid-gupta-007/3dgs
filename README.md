@@ -36,6 +36,24 @@ pip install -e ".[dev]"
 
 ### 3. Usage
 
+#### Reconstruct a 360-degree scene from one panorama
+
+PanoGS makes overlapping perspective crops from the panorama, estimates depth, blends the views, and exports a surround Gaussian scene. See [the single-panorama pipeline](docs/single_panorama_pipeline.md) for the command and its capture-center movement limits.
+
+```powershell
+panogs reconstruct "path\to\room_2k.hdr" --model cubemap_depth_anything --shape surfel -o output\room_360.ply
+```
+
+#### Upload and reconstruct from the GUI
+
+Launch PanoGS Studio to open a lightweight start page. Choose **Upload an HDR panorama** to run reconstruction and create a Gaussian PLY, or **Open a Gaussian PLY** to load an existing file in SuperSplat. The Studio page does not initialize the PanoGS splat viewer or load its scene catalog.
+
+```powershell
+panogs studio
+```
+
+SuperSplat Editor is bundled from the user-provided PlayCanvas open-source checkout. Its MIT license is included at `panogs/apps/viewer/SUPERSPLAT_LICENSE.txt`. SuperSplat requires a browser/device with WebGPU support.
+
 #### Generate an AI-assisted navigable world from a panorama
 
 See [AI world generation](docs/ai_world_generation.md) for the World Labs API key setup, HDR handling, and command options. This optional workflow uploads an LDR preview and uses provider credits.

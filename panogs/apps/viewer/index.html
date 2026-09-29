@@ -502,11 +502,41 @@
             position: absolute; z-index: 20; top: 78px; left: 50%; transform: translateX(-50%);
             max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px; border-radius: 10px;
             color: #e2e8f0; background: rgba(15, 23, 42, .94); border: 1px solid rgba(148,163,184,.24);
-            font-size: 13px; text-align: center; box-shadow: 0 12px 32px #0008; display: none;
+            max-height: 40vh; overflow: auto; white-space: pre-wrap;
+            font-size: 13px; text-align: left; box-shadow: 0 12px 32px #0008; display: none;
         }
         #load-status.error { color: #fecaca; border-color: rgba(248,113,113,.45); }
         #load-status.success { color: #bbf7d0; border-color: rgba(74,222,128,.35); }
         #file-picker { display: none; }
+        #ply-picker { display: none; }
+        .welcome-screen {
+            position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
+            padding: 24px; background: radial-gradient(ellipse at 50% 36%, rgba(66, 72, 140, .28), rgba(8, 9, 14, .86) 64%);
+            backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+        }
+        .welcome-card {
+            width: min(760px, 100%); padding: clamp(24px, 5vw, 48px); text-align: center;
+            border: 1px solid rgba(255,255,255,.14); border-radius: 24px;
+            background: linear-gradient(145deg, rgba(24,27,43,.97), rgba(12,14,23,.97));
+            box-shadow: 0 30px 100px #000a, 0 0 70px rgba(99,102,241,.12);
+        }
+        .welcome-eyebrow { color: #a5b4fc; font-size: 11px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; }
+        .welcome-card h2 { margin-top: 12px; font-size: clamp(27px, 5vw, 42px); line-height: 1.08; letter-spacing: -1.2px; }
+        .welcome-copy { max-width: 510px; margin: 12px auto 28px; color: var(--text-secondary); font-size: 15px; line-height: 1.6; }
+        .welcome-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; text-align: left; }
+        .welcome-action {
+            min-height: 150px; padding: 20px; border: 1px solid rgba(255,255,255,.12); border-radius: 16px;
+            background: rgba(255,255,255,.035); color: var(--text-primary); text-align: left; cursor: pointer;
+            transition: transform .18s ease, border-color .18s ease, background .18s ease;
+        }
+        .welcome-action:hover { transform: translateY(-3px); border-color: rgba(129,140,248,.8); background: rgba(99,102,241,.12); }
+        .welcome-action.primary { border-color: rgba(129,140,248,.72); background: linear-gradient(135deg, rgba(99,102,241,.22), rgba(99,102,241,.07)); }
+        .welcome-icon { display: block; margin-bottom: 15px; font-size: 24px; }
+        .welcome-action strong { display: block; font-size: 16px; }
+        .welcome-action span:last-child { display: block; margin-top: 6px; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+        .welcome-footer { margin-top: 20px; color: var(--text-muted); font-size: 12px; }
+        .welcome-footer button { padding: 7px 10px; border: 0; background: transparent; color: #c7d2fe; cursor: pointer; font: inherit; }
+        .welcome-footer button:hover { color: white; }
         @media (max-width: 900px) {
             header { top: 10px; left: 10px; padding: 8px 11px; gap: 10px; }
             header > .badge { display: none; }
@@ -525,6 +555,11 @@
             .controls-panel { top: 112px; max-height: calc(100dvh - 164px); }
             .bottom-bar { left: 10px; transform: none; font-size: 11px; }
             #load-status { top: auto; bottom: 60px; }
+            .welcome-screen { padding: 14px; }
+            .welcome-card { padding: 25px 18px; }
+            .welcome-actions { grid-template-columns: 1fr; gap: 10px; }
+            .welcome-action { min-height: 112px; padding: 16px; }
+            .welcome-icon { display: inline-block; margin: 0 9px 0 0; vertical-align: middle; }
         }
     </style>
 </head>
@@ -535,6 +570,29 @@
     <div id="drop-overlay">Drop a .splat file anywhere to open it</div>
     <div id="load-status" role="status" aria-live="polite"></div>
     <input id="file-picker" type="file" accept=".splat,application/octet-stream">
+    <input id="hdr-picker" type="file" accept=".hdr,.exr,image/vnd.radiance,image/x-exr" style="display:none">
+    <input id="ply-picker" type="file" accept=".ply,application/octet-stream">
+
+    <section class="welcome-screen" id="welcome-screen" aria-labelledby="welcome-title">
+        <div class="welcome-card">
+            <div class="welcome-eyebrow">PanoGS Studio · Gaussian Splat Workflow</div>
+            <h2 id="welcome-title">What would you like to do?</h2>
+            <p class="welcome-copy">Turn a 360° panorama into a Gaussian scene, or open an existing Gaussian PLY in the SuperSplat editor.</p>
+            <div class="welcome-actions">
+                <button class="welcome-action primary" id="welcome-reconstruct">
+                    <span class="welcome-icon">🌐</span>
+                    <strong>Upload an HDR panorama</strong>
+                    <span>Choose an .hdr or .exr file and build a 3D Gaussian scene.</span>
+                </button>
+                <button class="welcome-action" id="welcome-open-ply">
+                    <span class="welcome-icon">🧩</span>
+                    <strong>Open a Gaussian PLY</strong>
+                    <span>Choose a .ply file and continue in the SuperSplat editor.</span>
+                </button>
+            </div>
+            <div class="welcome-footer">Already have a scene open? <button id="welcome-enter-viewer">Continue to PanoGS viewer →</button></div>
+        </div>
+    </section>
 
     <!-- Header -->
     <header class="glass-panel">
@@ -549,6 +607,8 @@
             <button id="btn-open-tab" class="btn-tab-link" title="Open active scene in new tab">↗ New Tab</button>
         </div>
         <button id="btn-import" title="Open a local .splat file">＋ Open splat</button>
+        <button id="btn-reconstruct-hdr" title="Upload an HDR panorama and create a Gaussian PLY">＋ Reconstruct HDR</button>
+        <button id="btn-home" title="Open the start menu">⌂ Start</button>
         <div class="badge" id="view-mode-badge">Gaussian viewer</div>
     </header>
 
@@ -1814,6 +1874,134 @@
                 status.style.display = "block";
             }
         }
+
+        function showWorkflowStatus(message, kind = "", actions = []) {
+            const status = document.getElementById("load-status");
+            status.replaceChildren(document.createTextNode(message));
+            status.className = kind;
+            status.style.display = "block";
+            if (actions.length) {
+                const row = document.createElement("div");
+                row.style.cssText = "display:flex;justify-content:center;gap:8px;margin-top:8px;flex-wrap:wrap";
+                for (const action of actions) {
+                    const button = document.createElement("button");
+                    button.className = "btn-tab-link";
+                    button.textContent = action.label;
+                    button.onclick = action.onClick;
+                    row.appendChild(button);
+                }
+                status.appendChild(row);
+            }
+        }
+
+        const welcomeScreen = document.getElementById("welcome-screen");
+        const hideWelcomeScreen = () => { welcomeScreen.style.display = "none"; };
+        document.getElementById("btn-home").onclick = () => { welcomeScreen.style.display = "grid"; };
+        document.getElementById("welcome-enter-viewer").onclick = hideWelcomeScreen;
+
+        const hdrPicker = document.getElementById("hdr-picker");
+        const reconstructButton = document.getElementById("btn-reconstruct-hdr");
+        document.getElementById("welcome-reconstruct").onclick = () => hdrPicker.click();
+        reconstructButton.onclick = () => hdrPicker.click();
+        hdrPicker.addEventListener("change", async () => {
+            const file = hdrPicker.files[0];
+            hdrPicker.value = "";
+            if (!file) return;
+            hideWelcomeScreen();
+            if (!/\.(hdr|exr)$/i.test(file.name)) {
+                showWorkflowStatus("Choose an .hdr or .exr panorama.", "error");
+                return;
+            }
+            if (file.size > 300 * 1024 * 1024) {
+                showWorkflowStatus("This upload exceeds the 300 MiB limit.", "error");
+                return;
+            }
+
+            reconstructButton.disabled = true;
+            showWorkflowStatus(`Uploading ${file.name}…`);
+            try {
+                const upload = await fetch(`/api/reconstruct?filename=${encodeURIComponent(file.name)}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/octet-stream" },
+                    body: file
+                });
+                const uploadResult = await upload.json();
+                if (!upload.ok) throw new Error(uploadResult.error || `Upload failed (${upload.status}).`);
+
+                let job;
+                do {
+                    await new Promise(resolve => window.setTimeout(resolve, 1800));
+                    const response = await fetch(uploadResult.status_url, { cache: "no-store" });
+                    job = await response.json();
+                    if (!response.ok) throw new Error(job.error || "Could not read reconstruction status.");
+                    const message = job.status === "failed" && job.log
+                        ? `${job.message} ${job.log.trim().split(/\r?\n/).slice(-2).join(" ")}`
+                        : job.message;
+                    showWorkflowStatus(message, job.status === "failed" ? "error" : "");
+                } while (job.status !== "complete" && job.status !== "failed");
+
+                if (job.status === "failed") {
+                    const details = (job.log || "").trim().slice(-2400);
+                    showWorkflowStatus(
+                        details ? `${job.message}\n\n${details}` : job.message,
+                        "error"
+                    );
+                    return;
+                }
+
+                const gaussianSceneId = `panorama_${job.id}_reconstruction_gaussians.hdrsplat`;
+                await initSceneCatalog(gaussianSceneId);
+                if (availableScenes.some(scene => scene.id === gaussianSceneId)) {
+                    await switchScene(gaussianSceneId);
+                }
+                const editorUrl = `/supersplat/?content=${encodeURIComponent(`/api/reconstruction/${job.id}/gaussian.ply`)}`;
+                showWorkflowStatus("Panorama reconstructed. Open the Gaussian PLY in SuperSplat to inspect or edit it.", "success", [
+                    { label: "↗ Open in SuperSplat", onClick: () => window.open(editorUrl, "_blank", "noopener") },
+                    { label: "View in PanoGS", onClick: () => switchScene(gaussianSceneId) }
+                ]);
+            } catch (error) {
+                showWorkflowStatus(error.message || "Panorama reconstruction failed.", "error");
+            } finally {
+                reconstructButton.disabled = false;
+            }
+        });
+
+        const plyPicker = document.getElementById("ply-picker");
+        document.getElementById("welcome-open-ply").onclick = () => plyPicker.click();
+        plyPicker.addEventListener("change", async () => {
+            const file = plyPicker.files[0];
+            plyPicker.value = "";
+            if (!file) return;
+            hideWelcomeScreen();
+            if (!file.name.toLowerCase().endsWith(".ply")) {
+                showWorkflowStatus("Choose a Gaussian .ply file.", "error");
+                return;
+            }
+            if (file.size > 1024 * 1024 * 1024) {
+                showWorkflowStatus("This PLY exceeds the 1 GiB upload limit.", "error");
+                return;
+            }
+
+            const openButton = document.getElementById("welcome-open-ply");
+            openButton.disabled = true;
+            showWorkflowStatus(`Uploading ${file.name} to SuperSplat…`);
+            try {
+                const response = await fetch(`/api/open-ply?filename=${encodeURIComponent(file.name)}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/octet-stream" },
+                    body: file
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || `PLY upload failed (${response.status}).`);
+                showWorkflowStatus(`${file.name} is ready. Opening SuperSplat…`, "success");
+                window.location.assign(result.editor_url);
+            } catch (error) {
+                showWorkflowStatus(error.message || "Could not open this PLY in SuperSplat.", "error");
+            } finally {
+                openButton.disabled = false;
+            }
+        });
+
         const dropOverlay = document.getElementById("drop-overlay");
         window.addEventListener("dragover", e => { e.preventDefault(); dropOverlay.classList.add("dragover"); });
         dropOverlay.addEventListener("dragleave", () => dropOverlay.classList.remove("dragover"));
@@ -2074,6 +2262,14 @@
                 try {
                     const response = await fetch('/api/config');
                     const config = await response.json();
+                    if (!config.has_model) {
+                        currentSceneId = "";
+                        document.getElementById("splat-count").textContent = "0";
+                        document.getElementById("loader").style.display = "none";
+                        await initSceneCatalog("");
+                        showWorkflowStatus("Choose Reconstruct HDR to upload a panorama and generate a Gaussian PLY.");
+                        return;
+                    }
                     sceneParam = config.default_scene_id;
                 } catch (error) {
                     sceneParam = '__current_model__';
