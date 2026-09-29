@@ -33,6 +33,7 @@ class LDILayer:
     normals: np.ndarray         # (H, W, 3) float32 surface normals
     valid_mask: np.ndarray      # (H, W) bool mask of active pixels in this layer
     depth_range: Tuple[float, float]  # (min_depth, max_depth) for this tier
+    radiance: Optional[np.ndarray] = None  # (H, W, 3) float32 linear RGB
 
 
 def compute_layer_depth_thresholds(
@@ -72,6 +73,7 @@ def construct_layered_depth_image(
     inpaint_radius: int = 9,
     h_floor: float = 1.4,
     h_ceiling: float = 1.7,
+    radiance: Optional[np.ndarray] = None,
 ) -> List[LDILayer]:
     """
     Deconstruct an equirectangular panorama into an LDI stack of decoupled layers.
@@ -88,6 +90,13 @@ def construct_layered_depth_image(
 
     layers: List[LDILayer] = []
     current_rgb = img_rgb.copy()
+    if radiance is None:
+        from panogs.io.images import srgb_to_linear
+        current_radiance = srgb_to_linear(img_rgb.astype(np.float32) / 255.0)
+    else:
+        current_radiance = np.asarray(radiance, dtype=np.float32).copy()
+        if current_radiance.shape != img_rgb.shape:
+            raise ValueError("Radiance image must match the RGB image dimensions")
     current_depth = depth_map.copy()
 
     for idx, (d_min, d_max) in enumerate(intervals):
@@ -127,6 +136,7 @@ def construct_layered_depth_image(
                     normals=normals_grad,
                     valid_mask=clean_mask,
                     depth_range=(d_min, d_max),
+                    radiance=current_radiance.copy(),
                 )
             )
             logger.info(f"Layer {idx} (Foreground [{d_min:.2f}m - {d_max:.2f}m]): {np.count_nonzero(clean_mask):,} active splats.")
@@ -134,6 +144,10 @@ def construct_layered_depth_image(
             # Inpaint background behind this layer for deeper layers
             occlusion_mask = layer_active.astype(np.uint8) * 255
             current_rgb = inpaint_background_texture(current_rgb, occlusion_mask, inpaint_radius=inpaint_radius, method="telea")
+            current_radiance = np.stack([
+                cv2.inpaint(current_radiance[:, :, c], occlusion_mask, inpaint_radius, cv2.INPAINT_TELEA)
+                for c in range(3)
+            ], axis=-1)
             current_depth = inpaint_background_depth(current_depth, occlusion_mask, smooth_sigma=3.0)
 
         else:
@@ -170,6 +184,7 @@ def construct_layered_depth_image(
                     normals=normals_bg,
                     valid_mask=bg_valid,
                     depth_range=(d_min, d_max),
+                    radiance=current_radiance,
                 )
             )
             logger.info(f"Layer {idx} (Background Room Shell [{d_min:.2f}m - {d_max:.2f}m]): {np.count_nonzero(bg_valid):,} active splats.")
@@ -195,6 +210,7 @@ def reconstruct_from_ldi(
     all_points = []
     all_colors = []
     all_normals = []
+    all_radiance = []
     all_layer_ids = []
 
     H, W = layers[0].depth.shape[:2]
@@ -210,22 +226,30 @@ def reconstruct_from_ldi(
         pts = (r * d).astype(np.float32)
         cols = layer.rgb[mask].astype(np.uint8)
         norms = layer.normals[mask].astype(np.float32)
+        if layer.radiance is None:
+            from panogs.io.images import srgb_to_linear
+            rad = srgb_to_linear(cols.astype(np.float32) / 255.0)
+        else:
+            rad = layer.radiance[mask].astype(np.float32)
         layer_ids = np.full(len(pts), layer.layer_index, dtype=np.int32)
 
         all_points.append(pts)
         all_colors.append(cols)
         all_normals.append(norms)
+        all_radiance.append(rad)
         all_layer_ids.append(layer_ids)
 
     merged_points = np.vstack(all_points).astype(np.float32)
     merged_colors = np.vstack(all_colors).astype(np.uint8)
     merged_normals = np.vstack(all_normals).astype(np.float32)
+    merged_radiance = np.vstack(all_radiance).astype(np.float32)
     merged_layers = np.concatenate(all_layer_ids)
 
     pc = PointCloud(
         points=merged_points,
         colors=merged_colors,
         normals=merged_normals,
+        radiance=merged_radiance,
         metadata={
             "total_pixels": H * W,
             "num_ldi_layers": len(layers),

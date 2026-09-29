@@ -1,24 +1,30 @@
 """
 Local HTTP streaming server for the PanoGS interactive 3D WebGL viewer.
-Serves the web application and streams 3DGS binary .splat scene data.
+Serves the web application and streams standard or HDR PanoGS splat scene data.
 """
 
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import io
 from pathlib import Path
+import tempfile
 import threading
 from typing import Optional, Union
 import webbrowser
 
 from panogs.core.logging import get_logger
-from panogs.io.gaussian_ply import load_gaussian_ply, save_gaussian_splat
+from panogs.io.gaussian_ply import load_gaussian_ply, save_gaussian_hdr_splat, save_gaussian_splat
 
 
 class SplatViewerHandler(SimpleHTTPRequestHandler):
     """HTTP Request Handler serving viewer assets and binary splat stream."""
 
     model_bytes: bytes = b""
+    model_format: str = "standard32"
     html_content: str = ""
+    default_scene_id: str = "__current_model__"
+    default_scene_name: str = "Loaded model"
+    default_scene_gaussians: int = 0
+    default_scene_size_mb: float = 0.0
 
     def do_GET(self):
         logger = get_logger("viewer.server")
@@ -41,10 +47,31 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(content)
 
+        elif self.path == "/api/config":
+            import json
+            resp_body = json.dumps({"default_scene_id": SplatViewerHandler.default_scene_id}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp_body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.end_headers()
+            self.wfile.write(resp_body)
+
         elif self.path == "/api/scenes" or self.path.startswith("/api/scenes"):
             import json
             output_dir = Path("output")
-            scenes = []
+            scenes = [{
+                "id": SplatViewerHandler.default_scene_id,
+                "name": SplatViewerHandler.default_scene_name,
+                "branch": "Loaded file",
+                "badge": "Current model",
+                "desc": "The file passed to the viewer when it was launched",
+                "gaussians": SplatViewerHandler.default_scene_gaussians,
+                "size_mb": SplatViewerHandler.default_scene_size_mb,
+                "url": f"/?scene={SplatViewerHandler.default_scene_id}",
+                "api_url": f"/api/scene.splat?scene={SplatViewerHandler.default_scene_id}",
+            }]
 
             # Priority curated scenes explicitly aligned with branches and presentations
             curated_map = [
@@ -110,12 +137,17 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
             for item in curated_map:
                 target_file = None
                 for alias in item["aliases"]:
+                    hdr_candidate = output_dir / f"{Path(alias).stem}.hdrsplat"
+                    if hdr_candidate.exists():
+                        target_file = hdr_candidate
+                        break
                     p = output_dir / alias
                     if p.exists():
                         target_file = p
                         break
                 if target_file:
-                    splat_cnt = target_file.stat().st_size // 32
+                    bytes_per_splat = 44 if target_file.suffix.lower() == ".hdrsplat" else 32
+                    splat_cnt = target_file.stat().st_size // bytes_per_splat
                     size_mb = target_file.stat().st_size / (1024 * 1024)
                     scenes.append({
                         "id": target_file.name,
@@ -130,12 +162,18 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
                     })
                     for a in item["aliases"]:
                         seen_ids.add(a)
+                    seen_ids.add(target_file.name)
 
-            # Also discover any other .splat in output
+            # Also discover any other standard or HDR viewer splat in output
             if output_dir.exists():
-                for p in sorted(output_dir.glob("*.splat")):
-                    if p.name not in seen_ids and not p.name.endswith(".tmp.splat"):
-                        splat_cnt = p.stat().st_size // 32
+                hdr_stems = {p.stem for p in output_dir.glob("*.hdrsplat")}
+                local_splats = [*output_dir.glob("*.splat"), *output_dir.glob("*.hdrsplat")]
+                for p in sorted(local_splats):
+                    bytes_per_splat = 44 if p.suffix.lower() == ".hdrsplat" else 32
+                    if p.suffix.lower() == ".splat" and p.stem in hdr_stems:
+                        continue
+                    if p.name not in seen_ids and not p.name.endswith((".tmp.splat", ".tmp.hdrsplat")):
+                        splat_cnt = p.stat().st_size // bytes_per_splat
                         size_mb = p.stat().st_size / (1024 * 1024)
                         clean_name = p.stem.replace("_", " ").title()
                         scenes.append({
@@ -166,6 +204,7 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
             query_params = urllib.parse.parse_qs(parsed.query)
 
             data = self.model_bytes
+            scene_format = self.model_format
             if "scene" in query_params:
                 scene_name = query_params["scene"][0]
                 candidates = [
@@ -176,13 +215,14 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
                 for cand in candidates:
                     if cand.exists():
                         try:
-                            data = prepare_splat_bytes(cand)
+                            data, scene_format = prepare_viewer_payload(cand)
                             break
                         except Exception as e:
                             logger.error(f"Failed to load dynamic scene {cand}: {e}")
 
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("X-PanoGS-Format", scene_format)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -227,6 +267,23 @@ def prepare_splat_bytes(model_path: Union[str, Path]) -> bytes:
         raise ValueError(f"Unsupported 3DGS format: {path.suffix} (expected .splat or .ply)")
 
 
+def prepare_viewer_payload(model_path: Union[str, Path]) -> tuple[bytes, str]:
+    """Prepare bytes and format tag for the viewer, retaining float PLY radiance."""
+    path = Path(model_path)
+    if path.suffix.lower() == ".hdrsplat":
+        return path.read_bytes(), "hdr44"
+    if path.suffix.lower() == ".splat":
+        return path.read_bytes(), "standard32"
+    if path.suffix.lower() != ".ply":
+        raise ValueError(f"Unsupported 3DGS format: {path.suffix} (expected .ply, .splat, or .hdrsplat)")
+
+    model = load_gaussian_ply(path)
+    with tempfile.TemporaryDirectory(prefix="panogs_hdr_") as temp_dir:
+        temp_path = Path(temp_dir) / "scene.hdrsplat"
+        save_gaussian_hdr_splat(temp_path, model)
+        return temp_path.read_bytes(), "hdr44"
+
+
 def start_viewer_server(
     model_path: Union[str, Path],
     port: int = 8080,
@@ -237,7 +294,7 @@ def start_viewer_server(
     Start the interactive WebGL 3DGS viewer HTTP server.
 
     Args:
-        model_path: Path to .splat or .ply file.
+        model_path: Path to .splat, .hdrsplat, or Gaussian .ply file.
         port: Port to serve on (default: 8080).
         open_browser: Whether to open default web browser automatically.
         block: Whether to block calling thread with serve_forever().
@@ -251,11 +308,17 @@ def start_viewer_server(
     with open(html_path, "r", encoding="utf-8") as f:
         html_str = f.read()
 
-    splat_data = prepare_splat_bytes(model_path)
-    num_gaussians = len(splat_data) // 32
+    splat_data, model_format = prepare_viewer_payload(model_path)
+    bytes_per_gaussian = 44 if model_format == "hdr44" else 32
+    num_gaussians = len(splat_data) // bytes_per_gaussian
 
     SplatViewerHandler.html_content = html_str
     SplatViewerHandler.model_bytes = splat_data
+    SplatViewerHandler.model_format = model_format
+    SplatViewerHandler.default_scene_id = "__current_model__"
+    SplatViewerHandler.default_scene_name = Path(model_path).stem.replace("_", " ").title()
+    SplatViewerHandler.default_scene_gaussians = num_gaussians
+    SplatViewerHandler.default_scene_size_mb = round(len(splat_data) / (1024 * 1024), 1)
 
     server_address = ("127.0.0.1", port)
     httpd = ThreadingHTTPServer(server_address, SplatViewerHandler)

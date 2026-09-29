@@ -13,6 +13,18 @@ from PIL import Image
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".hdr", ".exr"}
 
 
+def srgb_to_linear(rgb: np.ndarray) -> np.ndarray:
+    """Convert display-encoded sRGB in [0, 1] to linear-light RGB."""
+    values = np.asarray(rgb, dtype=np.float32)
+    return np.where(values <= 0.04045, values / 12.92, ((values + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(rgb: np.ndarray) -> np.ndarray:
+    """Convert nonnegative linear-light RGB to display-encoded sRGB."""
+    values = np.maximum(np.asarray(rgb, dtype=np.float32), 0.0)
+    return np.where(values <= 0.0031308, values * 12.92, 1.055 * np.power(values, 1.0 / 2.4) - 0.055)
+
+
 @dataclass
 class ImageMetadata:
     """Metadata describing an image file and its memory footprint."""
@@ -164,19 +176,11 @@ def load_image(
         else:
             hdr_rgb = cv2.cvtColor(hdr_bgr, cv2.COLOR_BGR2RGB)
 
-        # Adaptive exposure and ACES Filmic tone mapping with sRGB gamma
-        valid_rad = hdr_rgb[hdr_rgb > 1e-4]
-        med = float(np.median(valid_rad)) if len(valid_rad) > 0 else 0.5
-        exposure = 0.55 / max(1e-3, med)
-        x = hdr_rgb * exposure
-        a = 2.51
-        b = 0.03
-        c = 2.43
-        d = 0.59
-        e = 0.14
-        aces = np.clip((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0)
-        srgb = np.power(aces, 1.0 / 2.2)
-        uint8_rgb = (np.clip(srgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+        # Convert linear HDR radiance to display-referred sRGB without tone mapping
+        # or automatic exposure. Values above 1.0 are clipped for this 8-bit path.
+        linear_rgb = np.clip(hdr_rgb, 0.0, 1.0)
+        srgb = linear_to_srgb(linear_rgb)
+        uint8_rgb = (srgb * 255.0).round().astype(np.uint8)
         img = Image.fromarray(uint8_rgb)
     else:
         img = Image.open(file_path)
@@ -194,6 +198,44 @@ def load_image(
             img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
     return img
+
+
+def load_hdr_radiance(
+    path: Union[str, Path],
+    max_resolution: Optional[int] = None,
+) -> np.ndarray:
+    """Load an HDR/EXR image as unmodified linear-light float32 RGB radiance.
+
+    Unlike :func:`load_image`, this function does not apply exposure, tone mapping,
+    clipping, gamma encoding, or 8-bit quantization. It is intended for rendering
+    and optimization targets; neural depth estimators should use ``load_image``.
+    """
+    file_path = validate_image_path(path)
+    if file_path.suffix.lower() not in {".hdr", ".exr"}:
+        raise ValueError(f"Expected an HDR or EXR image, got: {file_path.suffix}")
+
+    import cv2
+
+    hdr_bgr = cv2.imread(str(file_path), cv2.IMREAD_UNCHANGED)
+    if hdr_bgr is None:
+        raise ValueError(f"Failed to read HDR/EXR image: {file_path}")
+    if hdr_bgr.ndim == 2:
+        hdr_rgb = np.repeat(hdr_bgr[:, :, None], 3, axis=2)
+    else:
+        if hdr_bgr.shape[2] < 3:
+            hdr_rgb = np.repeat(hdr_bgr[:, :, :1], 3, axis=2)
+        else:
+            hdr_rgb = cv2.cvtColor(hdr_bgr[:, :, :3], cv2.COLOR_BGR2RGB)
+
+    hdr_rgb = np.nan_to_num(hdr_rgb, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    if max_resolution is not None:
+        height, width = hdr_rgb.shape[:2]
+        longest = max(width, height)
+        if longest > max_resolution:
+            scale = max_resolution / float(longest)
+            size = (max(1, round(width * scale)), max(1, round(height * scale)))
+            hdr_rgb = cv2.resize(hdr_rgb, size, interpolation=cv2.INTER_AREA)
+    return np.ascontiguousarray(hdr_rgb)
 
 
 def load_image_as_numpy(

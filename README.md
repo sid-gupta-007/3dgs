@@ -36,6 +36,10 @@ pip install -e ".[dev]"
 
 ### 3. Usage
 
+#### Generate an AI-assisted navigable world from a panorama
+
+See [AI world generation](docs/ai_world_generation.md) for the World Labs API key setup, HDR handling, and command options. This optional workflow uploads an LDR preview and uses provider credits.
+
 #### Show CLI Help
 ```bash
 panogs --help

@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from panogs.io.images import load_image
+from panogs.io.images import load_hdr_radiance, load_image, srgb_to_linear
 from panogs.rendering.camera import Camera, create_lookat_camera
 
 
@@ -19,7 +19,7 @@ from panogs.rendering.camera import Camera, create_lookat_camera
 class TrainingView:
     """A ground truth training view pairing a Camera with its target RGB image."""
     camera: Camera
-    image: torch.Tensor  # (H, W, 3) float32 in [0, 1]
+    image: torch.Tensor  # (H, W, 3) float32 linear RGB; HDR values may exceed 1
     name: str
 
 
@@ -31,14 +31,14 @@ def sample_perspective_from_equirectangular(
     Render/sample a perspective view from an equirectangular panorama image.
 
     Args:
-        pano_rgb: (H_pano, W_pano, 3) float32 in [0, 1] or uint8 in [0, 255].
+        pano_rgb: (H_pano, W_pano, 3) float32 linear RGB or uint8 sRGB in [0, 255].
         camera: Perspective Camera defining the viewport.
 
     Returns:
-        np.ndarray: (H, W, 3) float32 sampled perspective image in [0, 1].
+        np.ndarray: (H, W, 3) float32 sampled perspective linear RGB image.
     """
     if pano_rgb.dtype == np.uint8:
-        pano = pano_rgb.astype(np.float32) / 255.0
+        pano = srgb_to_linear(pano_rgb.astype(np.float32) / 255.0)
     else:
         pano = pano_rgb.astype(np.float32)
 
@@ -87,16 +87,16 @@ def sample_perspective_from_equirectangular(
     v_pano_pix = v_pano_norm * (H_pano - 1.0)
 
     # Bilinear interpolation
-    u0 = np.floor(u_pano_pix).astype(np.int32)
-    u1 = np.clip(u0 + 1, 0, W_pano - 1)
+    # Keep the unwrapped integer coordinate for the interpolation fraction.
+    # Wrapping u0 before calculating du makes du nearly W at the longitude
+    # seam, blending unrelated pixels and producing a visible smeared stripe.
+    u0_unwrapped = np.floor(u_pano_pix).astype(np.int32)
+    u0 = np.mod(u0_unwrapped, W_pano)
+    u1 = np.mod(u0_unwrapped + 1, W_pano)
     v0 = np.floor(v_pano_pix).astype(np.int32)
     v1 = np.clip(v0 + 1, 0, H_pano - 1)
 
-    # Wrap u around horizontally
-    u0 = np.mod(u0, W_pano)
-    u1 = np.mod(u1, W_pano)
-
-    du = (u_pano_pix - u0)[:, :, np.newaxis]
+    du = (u_pano_pix - u0_unwrapped)[:, :, np.newaxis]
     dv = (v_pano_pix - v0)[:, :, np.newaxis]
 
     Ia = pano[v0, u0]
@@ -111,7 +111,7 @@ def sample_perspective_from_equirectangular(
         + Ic * (1.0 - du) * dv
         + Id * du * dv
     )
-    return np.clip(sampled, 0.0, 1.0).astype(np.float32)
+    return np.maximum(sampled, 0.0).astype(np.float32)
 
 
 def generate_training_views(
@@ -136,8 +136,14 @@ def generate_training_views(
     Returns:
         List[TrainingView]: List of training views with Cameras and ground-truth image tensors.
     """
-    pil_img = load_image(image_path)
-    pano_rgb = np.array(pil_img, dtype=np.float32) / 255.0
+    image_path = Path(image_path)
+    if image_path.suffix.lower() in {".hdr", ".exr"}:
+        # Keep HDR training targets in linear radiance; depth inference continues
+        # to use the display-referred preview path.
+        pano_rgb = load_hdr_radiance(image_path)
+    else:
+        pil_img = load_image(image_path)
+        pano_rgb = srgb_to_linear(np.array(pil_img, dtype=np.float32) / 255.0)
 
     views: List[TrainingView] = []
     azimuths = np.linspace(0.0, 360.0, num_views, endpoint=False)

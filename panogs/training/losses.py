@@ -31,13 +31,14 @@ def ssim(
     sigma: float = 1.5,
     channel: int = 3,
     size_average: bool = True,
+    data_range: float = 1.0,
 ) -> torch.Tensor:
     """
     Calculate Structural Similarity Index (SSIM) between two image batches.
 
     Args:
-        img1: (B, C, H, W) or (C, H, W) tensor in [0, 1].
-        img2: (B, C, H, W) or (C, H, W) tensor in [0, 1].
+        img1: (B, C, H, W) or (C, H, W) linear RGB tensor.
+        img2: (B, C, H, W) or (C, H, W) linear RGB tensor.
         window_size: Gaussian kernel window size (default: 11).
         sigma: Gaussian kernel std (default: 1.5).
         channel: Number of color channels (default: 3).
@@ -55,9 +56,9 @@ def ssim(
     dtype = img1.dtype
     window = _create_gaussian_2d_window(window_size, channel, sigma).to(device=device, dtype=dtype)
 
-    # Constants for numerical stability (C1 = (K1*L)^2, C2 = (K2*L)^2 with L=1.0)
-    C1 = 0.01 ** 2
-    C2 = 0.03 ** 2
+    # Scale the stability constants to the target's radiance range.
+    C1 = (0.01 * data_range) ** 2
+    C2 = (0.03 * data_range) ** 2
 
     mu1 = F.conv2d(img1, window, padding=window_size // 2, groups=channel)
     mu2 = F.conv2d(img2, window, padding=window_size // 2, groups=channel)
@@ -94,8 +95,8 @@ def combined_loss(
         L = (1 - lambda_ssim) * L1 + lambda_ssim * (1 - SSIM)
 
     Args:
-        pred: (H, W, 3) or (B, 3, H, W) float tensor in [0, 1].
-        target: (H, W, 3) or (B, 3, H, W) float tensor in [0, 1].
+        pred: (H, W, 3) or (B, 3, H, W) linear RGB float tensor.
+        target: (H, W, 3) or (B, 3, H, W) linear RGB float tensor.
         lambda_ssim: Weight for SSIM loss component (default: 0.2).
 
     Returns:
@@ -112,8 +113,9 @@ def combined_loss(
         p = pred
         t = target
 
+    data_range = max(float(torch.max(torch.abs(t)).detach().item()), 1.0)
     loss_l1 = l1_loss(p, t)
-    ssim_val = ssim(p, t)
+    ssim_val = ssim(p, t, data_range=data_range)
     loss_ssim = 1.0 - ssim_val
 
     total_loss = (1.0 - lambda_ssim) * loss_l1 + lambda_ssim * loss_ssim

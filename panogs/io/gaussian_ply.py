@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Union
 import numpy as np
 
-from panogs.core.gaussian.model import GaussianModel, logit, rgb_to_sh0, sh0_to_rgb, sigmoid
+from panogs.core.gaussian.model import GaussianModel, SH_C0, logit, rgb_to_sh0, sh0_to_rgb, sigmoid
 from panogs.core.logging import get_logger
 
 
@@ -48,7 +48,7 @@ def save_gaussian_ply(
     header_lines = [
         "ply",
         "format binary_little_endian 1.0",
-        "comment PanoGS 3D Gaussian Splatting Exporter",
+        "comment PanoGS 3D Gaussian Splatting Exporter; color_space=linear-radiance",
         f"element vertex {N}",
         "property float x",
         "property float y",
@@ -125,9 +125,12 @@ def load_gaussian_ply(file_path: Union[str, Path]) -> GaussianModel:
                 break
 
         num_vertices = 0
+        has_linear_radiance = False
         for line in header_lines:
             if line.startswith("element vertex"):
                 num_vertices = int(line.split()[2])
+            if "color_space=linear-radiance" in line:
+                has_linear_radiance = True
 
         if num_vertices == 0:
             raise ValueError(f"Empty PLY file: {target}")
@@ -145,6 +148,15 @@ def load_gaussian_ply(file_path: Union[str, Path]) -> GaussianModel:
 
     xyz = np.stack([data["x"], data["y"], data["z"]], axis=-1)
     f_dc = np.stack([data["f_dc_0"], data["f_dc_1"], data["f_dc_2"]], axis=-1)
+    if not has_linear_radiance:
+        # Older PanoGS and common external PLYs stored display-encoded RGB in SH0.
+        srgb = np.clip(f_dc * SH_C0 + 0.5, 0.0, 1.0)
+        linear = np.where(
+            srgb <= 0.04045,
+            srgb / 12.92,
+            np.power((srgb + 0.055) / 1.055, 2.4),
+        )
+        f_dc = rgb_to_sh0(linear)
     opacity = data["opacity"][:, np.newaxis]
     scales = np.stack([data["scale_0"], data["scale_1"], data["scale_2"]], axis=-1)
     rotations = np.stack([data["rot_0"], data["rot_1"], data["rot_2"], data["rot_3"]], axis=-1)
@@ -202,4 +214,33 @@ def save_gaussian_splat(
     with open(target, "wb") as f:
         splat_data.tofile(f)
 
+    return target
+
+
+def save_gaussian_hdr_splat(
+    file_path: Union[str, Path],
+    model: GaussianModel,
+) -> Path:
+    """Save the viewer's 44-byte float-radiance splat format.
+
+    Record layout: xyz and scale (6 float32), linear RGB radiance and opacity
+    (4 float32), followed by a normalized quaternion packed as 4 uint8 values.
+    Unlike the interoperable 32-byte ``.splat`` format, radiance is not clipped.
+    """
+    target = Path(file_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    count = model.num_gaussians
+    data = np.empty(count, dtype=np.dtype([
+        ("xyz_scale", "<f4", (6,)),
+        ("radiance_opacity", "<f4", (4,)),
+        ("rotation", "u1", (4,)),
+    ]))
+    data["xyz_scale"][:, :3] = model.get_xyz()
+    data["xyz_scale"][:, 3:] = model.get_scaling()
+    data["radiance_opacity"][:, :3] = model.get_rgb()
+    data["radiance_opacity"][:, 3] = model.get_opacity().reshape(-1)
+    quats = model.get_rotation_quats()
+    data["rotation"] = np.clip(np.round((quats * 0.5 + 0.5) * 255.0), 0, 255).astype(np.uint8)
+    with open(target, "wb") as f:
+        data.tofile(f)
     return target

@@ -237,7 +237,13 @@ def render_gaussians_cpu(
     # 4. Composite remaining background
     bg = np.array(bg_color, dtype=np.float32).reshape(1, 1, 3)
     final_rgb = acc_color + transmittance[:, :, np.newaxis] * bg
-    final_uint8 = (np.clip(final_rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+    linear_rgb = np.clip(final_rgb, 0.0, 1.0)
+    srgb = np.where(
+        linear_rgb <= 0.0031308,
+        12.92 * linear_rgb,
+        1.055 * np.power(linear_rgb, 1.0 / 2.4) - 0.055,
+    )
+    final_uint8 = (srgb * 255.0).round().astype(np.uint8)
 
     logger.debug(f"Rendered {rendered_count:,} / {M:,} visible Gaussians to {W}x{H} frame.")
     return final_uint8

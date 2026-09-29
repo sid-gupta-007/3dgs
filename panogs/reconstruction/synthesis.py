@@ -238,6 +238,8 @@ def synthesize_cavity_splats(
     # World coordinates: P_world = R_inv @ P_cam + pos
     pts_world = (R_inv @ pts_cam.T).T + pos[np.newaxis, :]
     colors_synth = inpainted_color[v_coords, u_coords]
+    from panogs.io.images import srgb_to_linear
+    radiance_synth = srgb_to_linear(colors_synth.astype(np.float32) / 255.0)
 
     # Surface normals: camera-facing towards virtual camera
     norms = pos[np.newaxis, :] - pts_world
@@ -249,6 +251,7 @@ def synthesize_cavity_splats(
         points=pts_world.astype(np.float32),
         colors=colors_synth.astype(np.uint8),
         normals=norms_world.astype(np.float32),
+        radiance=radiance_synth,
     )
 
 
@@ -289,6 +292,13 @@ def synthesize_multi_view_scene(
 
     all_points = [primary_point_cloud.points]
     all_colors = [primary_point_cloud.colors]
+    from panogs.io.images import srgb_to_linear
+    primary_radiance = (
+        primary_point_cloud.radiance
+        if primary_point_cloud.radiance is not None
+        else srgb_to_linear(primary_point_cloud.colors.astype(np.float32) / 255.0)
+    )
+    all_radiance = [primary_radiance]
     all_normals = [primary_point_cloud.normals] if primary_point_cloud.normals is not None else []
     
     # Build spatial KD-tree of existing points for fast duplicate rejection
@@ -307,16 +317,19 @@ def synthesize_multi_view_scene(
             if novel_count > 0:
                 novel_pts = synth_pc.points[novel_mask]
                 novel_cols = synth_pc.colors[novel_mask]
+                novel_radiance = synth_pc.radiance[novel_mask]
                 novel_norms = synth_pc.normals[novel_mask]
 
                 all_points.append(novel_pts)
                 all_colors.append(novel_cols)
+                all_radiance.append(novel_radiance)
                 all_normals.append(novel_norms)
                 total_synth_points += novel_count
                 logger.info(f"View {i + 1}: Fused {novel_count:,} synthesized cavity points into scene.")
 
     merged_points = np.vstack(all_points).astype(np.float32)
     merged_colors = np.vstack(all_colors).astype(np.uint8)
+    merged_radiance = np.vstack(all_radiance).astype(np.float32)
     merged_normals = np.vstack(all_normals).astype(np.float32) if len(all_normals) > 0 else None
 
     logger.info(
@@ -332,5 +345,6 @@ def synthesize_multi_view_scene(
         points=merged_points,
         colors=merged_colors,
         normals=merged_normals,
+        radiance=merged_radiance,
         metadata=meta,
     )

@@ -13,19 +13,18 @@ SH_C0 = 0.28209479177387814  # 1 / (2 * sqrt(pi))
 
 def rgb_to_sh0(rgb: np.ndarray) -> np.ndarray:
     """
-    Convert RGB in [0.0, 1.0] to zeroth-order spherical harmonics (SH0).
+    Convert nonnegative linear RGB radiance to zeroth-order spherical harmonics (SH0).
     Formula: SH0 = (RGB - 0.5) / SH_C0
     """
-    rgb_clipped = np.clip(rgb, 0.0, 1.0)
-    return (rgb_clipped - 0.5) / SH_C0
+    return (np.maximum(rgb, 0.0) - 0.5) / SH_C0
 
 
 def sh0_to_rgb(sh0: np.ndarray) -> np.ndarray:
     """
-    Convert zeroth-order spherical harmonics (SH0) back to RGB in [0.0, 1.0].
-    Formula: RGB = clamp(SH0 * SH_C0 + 0.5, 0.0, 1.0)
+    Convert zeroth-order spherical harmonics (SH0) back to nonnegative RGB radiance.
+    Values above 1.0 are retained for HDR; display formats clamp during export.
     """
-    return np.clip(sh0 * SH_C0 + 0.5, 0.0, 1.0)
+    return np.maximum(sh0 * SH_C0 + 0.5, 0.0)
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
@@ -121,7 +120,7 @@ class GaussianModel:
         opacities: np.ndarray,
     ) -> "GaussianModel":
         """
-        Create a GaussianModel from physical domain values (RGB [0, 1], opacities [0, 1], positive scales).
+        Create a GaussianModel from linear RGB radiance, opacities [0, 1], and positive scales.
         """
         scaling_log = np.log(np.maximum(scales, 1e-6))
         features_dc = rgb_to_sh0(colors_rgb)
@@ -170,12 +169,18 @@ class GaussianModel:
         return self._features_dc
 
     def get_rgb(self) -> np.ndarray:
-        """Return (N, 3) float32 RGB colors in [0.0, 1.0]."""
+        """Return (N, 3) float32 nonnegative linear RGB radiance."""
         return sh0_to_rgb(self._features_dc)
 
     def get_rgb_uint8(self) -> np.ndarray:
         """Return (N, 3) uint8 RGB colors in [0, 255]."""
-        return (self.get_rgb() * 255.0).astype(np.uint8)
+        linear_rgb = np.clip(self.get_rgb(), 0.0, 1.0)
+        srgb = np.where(
+            linear_rgb <= 0.0031308,
+            12.92 * linear_rgb,
+            1.055 * np.power(linear_rgb, 1.0 / 2.4) - 0.055,
+        )
+        return (srgb * 255.0).round().astype(np.uint8)
 
     # ─────────────────────────────────────────────────────────────
     # 3D Covariance Calculation

@@ -16,7 +16,12 @@ from panogs.core.config import load_config
 from panogs.core.gaussian import GaussianModel, initialize_from_pointcloud
 from panogs.core.logging import get_logger, setup_logging
 from panogs.io.depth import save_depth_result
-from panogs.io.gaussian_ply import load_gaussian_ply, save_gaussian_ply, save_gaussian_splat
+from panogs.io.gaussian_ply import (
+    load_gaussian_ply,
+    save_gaussian_hdr_splat,
+    save_gaussian_ply,
+    save_gaussian_splat,
+)
 from panogs.io.images import inspect_image
 from panogs.io.ply import read_point_cloud_ply, read_pointcloud, write_pointcloud
 from panogs.reconstruction.depth import get_depth_estimator
@@ -701,6 +706,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Benchmark rendering height in pixels (default: 300)",
     )
 
+    # Subcommand: ai-world
+    ai_world_parser = subparsers.add_parser(
+        "ai-world",
+        help="Generate a navigable AI-inferred 3D world from a panorama",
+        description=(
+            "Send a panorama to World Labs Marble, generate a navigable world, and download a Gaussian PLY. "
+            "This uses provider credits; HDR inputs are preserved locally and uploaded as a separate LDR preview."
+        ),
+    )
+    ai_world_parser.add_argument("panorama_path", help="Input panorama (JPG/PNG/WebP/HDR/EXR)")
+    ai_world_parser.add_argument("-o", "--output-dir", default="output/ai_world", help="Output directory")
+    ai_world_parser.add_argument("--prompt", default=None, help="Optional scene guidance for the AI")
+    ai_world_parser.add_argument("--name", default=None, help="Generated world's display name")
+    ai_world_parser.add_argument(
+        "--model", choices=["marble-1.0-draft", "marble-1.0", "marble-1.1", "marble-1.1-plus"],
+        default="marble-1.1", help="World Labs generation model (default: marble-1.1)",
+    )
+    ai_world_parser.add_argument(
+        "--resolution", choices=["full_res", "500k", "150k", "100k"], default="500k",
+        help="Gaussian export density (default: 500k)",
+    )
+    ai_world_parser.add_argument(
+        "--max-dimension", type=int, default=2048,
+        help="Maximum uploaded preview dimension in pixels (default: 2048)",
+    )
+    ai_world_parser.add_argument("--open-viewer", action="store_true", help="Open the generated PLY in PanoGS viewer")
+
     return parser
 
 
@@ -795,10 +827,14 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
 
         if use_ldi and args.camera == "spherical":
             logger.info(f"Using PanoDreamer-inspired Layered Depth Image (LDI) reconstruction with {max(2, num_layers)} layers...")
-            from panogs.io.images import load_image_as_numpy
+            from panogs.io.images import load_hdr_radiance, load_image_as_numpy, srgb_to_linear
             from panogs.reconstruction.ldi import construct_layered_depth_image, reconstruct_from_ldi
             
             img_rgb = load_image_as_numpy(image_path, normalize_float=False, max_resolution=args.max_res)
+            if image_path.suffix.lower() in {".hdr", ".exr"}:
+                img_radiance = load_hdr_radiance(image_path, max_resolution=args.max_res)
+            else:
+                img_radiance = srgb_to_linear(img_rgb.astype(np.float32) / 255.0)
             res = estimator.estimate(img_rgb)
             depth_raw = res.depth_map.astype(np.float32)
             if not getattr(res, 'is_metric', False):
@@ -819,6 +855,7 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
                 num_layers=max(2, num_layers),
                 h_floor=args.floor_height,
                 h_ceiling=args.ceiling_height,
+                radiance=img_radiance,
             )
             pc = reconstruct_from_ldi(layers, output_ply=output_path)
         elif getattr(args, "layout", True) and args.camera == "spherical" and not args.model.startswith("synthetic"):
@@ -891,8 +928,11 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
             )
             save_gaussian_ply(gauss_path, model)
             save_gaussian_splat(splat_path, model)
+            hdr_splat_path = gauss_path.with_suffix(".hdrsplat")
+            save_gaussian_hdr_splat(hdr_splat_path, model)
             print(f"  3DGS PLY:        {gauss_path} ({model.num_gaussians:,} Gaussians)")
-            print(f"  WebGL Splat:     {splat_path}\n")
+            print(f"  WebGL Splat:     {splat_path}")
+            print(f"  HDR WebGL Splat: {hdr_splat_path} (linear radiance)\n")
 
         return 0
     except Exception as e:
@@ -941,6 +981,7 @@ def handle_video(args: argparse.Namespace) -> int:
             model = initialize_from_pointcloud(pc, splat_shape=shape)
             save_gaussian_ply(gauss_path, model)
             save_gaussian_splat(splat_path, model)
+            save_gaussian_hdr_splat(gauss_path.with_suffix(".hdrsplat"), model)
             print(f"  3DGS PLY:        {gauss_path} ({model.num_gaussians:,} Gaussians)")
             print(f"  WebGL Splat:     {splat_path}\n")
 
@@ -1023,6 +1064,7 @@ def handle_init_gaussians(args: argparse.Namespace) -> int:
         if args.splat:
             splat_path = output_path.with_suffix(".splat")
             save_gaussian_splat(splat_path, model)
+            save_gaussian_hdr_splat(output_path.with_suffix(".hdrsplat"), model)
             logger.info(f"Saved .splat binary file to {splat_path}")
 
         scales = model.get_scaling()
@@ -1186,6 +1228,7 @@ def handle_compress(args: argparse.Namespace) -> int:
         save_gaussian_ply(output_path, compressed_model)
         if args.splat:
             save_gaussian_splat(output_path.with_suffix(".splat"), compressed_model)
+            save_gaussian_hdr_splat(output_path.with_suffix(".hdrsplat"), compressed_model)
 
         num_final = compressed_model.num_gaussians
         reduction = ((num_orig - num_final) / max(1, num_orig)) * 100
@@ -1242,6 +1285,41 @@ def handle_benchmark(args: argparse.Namespace) -> int:
         return 1
 
 
+def handle_ai_world(args: argparse.Namespace) -> int:
+    """Generate and optionally view a provider-created 3D world."""
+    logger = get_logger("cli.ai_world")
+    try:
+        from panogs.generation.worldlabs import generate_world
+
+        result = generate_world(
+            args.panorama_path,
+            args.output_dir,
+            prompt=args.prompt,
+            display_name=args.name,
+            model=args.model,
+            resolution=args.resolution,
+            max_dimension=args.max_dimension,
+        )
+        print("\nAI world generation complete:")
+        print(f"  Gaussian PLY: {result['generated_ply']}")
+        print(f"  Preserved source: {result['preserved_source_copy']}")
+        print(f"  Manifest: {result['manifest_path']}")
+        if result.get("world_url"):
+            print(f"  World page: {result['world_url']}")
+        print("  Note: geometry beyond the panorama's captured view is AI-inferred.\n")
+        if args.open_viewer:
+            start_viewer_server(
+                model_path=Path(result["generated_ply"]), port=8080, open_browser=True, block=True
+            )
+        return 0
+    except Exception as exc:
+        logger.error(f"AI world generation failed: {exc}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
 def main(args: Optional[List[str]] = None) -> int:
     """Main CLI entry point."""
     parser = build_parser()
@@ -1288,6 +1366,8 @@ def main(args: Optional[List[str]] = None) -> int:
         return handle_compress(parsed_args)
     elif parsed_args.command == "benchmark":
         return handle_benchmark(parsed_args)
+    elif parsed_args.command == "ai-world":
+        return handle_ai_world(parsed_args)
 
     logger.error(f"Unknown command: {parsed_args.command}")
     return 1

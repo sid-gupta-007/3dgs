@@ -6,6 +6,7 @@ from scipy.spatial import cKDTree
 
 from panogs.core.gaussian.model import GaussianModel, logit, rgb_to_sh0
 from panogs.core.logging import get_logger
+from panogs.io.images import srgb_to_linear
 
 if TYPE_CHECKING:
     from panogs.reconstruction.pointcloud import PointCloud
@@ -112,7 +113,10 @@ def initialize_from_pointcloud(
     logger.info(f"Computing adaptive scales for {N:,} points...")
     tree = cKDTree(xyz)
     k_query = min(k_scale_neighbors + 1, N)
-    distances, _ = tree.query(xyz, k=k_query)
+    distances, neighbor_indices = tree.query(xyz, k=k_query)
+    if k_query == 1:
+        distances = distances[:, np.newaxis]
+        neighbor_indices = neighbor_indices[:, np.newaxis]
 
     if distances.shape[1] > 1:
         mean_dists = np.mean(distances[:, 1:], axis=1)
@@ -209,12 +213,65 @@ def initialize_from_pointcloud(
             sy = adaptive_scales * 1.20
             sz = np.clip(adaptive_scales * 0.06, min_scale, max_scale)
         else:
-            # Hybrid (Default): continuous solid surfel discs on walls + razor contours at edges
-            sx = adaptive_scales * 1.28
-            sy = adaptive_scales * 1.28
-            sz = np.clip(adaptive_scales * 0.06, min_scale, max_scale)
+            # Adaptive (Default): use broad surfels on coherent planes, round
+            # splats where local normals vary, and narrow splats at detected
+            # depth boundaries. This avoids forcing one shape across the scene.
+            normal_agreement = np.ones(N, dtype=np.float32)
+            color_change = np.zeros(N, dtype=np.float32)
+            if k_query > 1:
+                neighbor_ids = neighbor_indices[:, 1:]
+                # Chunk the gather to bound temporary memory on large panoramas.
+                for start in range(0, N, 100_000):
+                    end = min(start + 100_000, N)
+                    neighbor_normals = normals[neighbor_ids[start:end]]
+                    agreement = np.abs(np.sum(
+                        normals[start:end, None, :] * neighbor_normals, axis=-1
+                    ))
+                    normal_agreement[start:end] = np.mean(agreement, axis=1)
 
-            # Pointy cylindrical needles at edge contours and specular highlights
+                    # PLY point clouds retain RGB even when reconstruction
+                    # metadata (such as a depth-edge mask) is unavailable.
+                    neighbor_rgb = point_cloud.colors[neighbor_ids[start:end]].astype(np.float32)
+                    center_rgb = point_cloud.colors[start:end, None, :].astype(np.float32)
+                    color_change[start:end] = np.mean(
+                        np.mean(np.abs(neighbor_rgb - center_rgb), axis=-1) / 255.0,
+                        axis=1,
+                    )
+
+            # High agreement indicates a locally planar patch. Low agreement
+            # makes the splat rounder to avoid stretching across curvature,
+            # corners, or unreliable monocular geometry.
+            planar = np.clip((normal_agreement - 0.65) / 0.30, 0.0, 1.0)
+            # Normalize against this scene's own color-variation distribution.
+            # Absolute RGB thresholds barely triggered on dense point clouds,
+            # even at real image edges, so use the upper detail quantiles.
+            detail_low, detail_high = np.quantile(color_change, [0.65, 0.95])
+            if detail_high > detail_low + 1e-6:
+                image_detail = np.clip(
+                    (color_change - detail_low) / (detail_high - detail_low), 0.0, 1.0
+                )
+            else:
+                image_detail = np.zeros(N, dtype=np.float32)
+            # Color edges and texture detail call for compact, round splats
+            # even on locally planar geometry. The top detail band becomes
+            # nearly round; moderate detail smoothly transitions from surfels.
+            planar *= 1.0 - 0.90 * image_detail
+            logger.info(
+                "Adaptive shape mix: %.1f%% planar surfels, %.1f%% round/detail, %.1f%% edge needles",
+                100.0 * np.mean(planar >= 0.95),
+                100.0 * np.mean(planar <= 0.05),
+                100.0 * np.mean(is_edge),
+            )
+            sphere_factor = 0.88
+            tangent_factor = sphere_factor + (1.28 - sphere_factor) * planar
+            thickness_factor = sphere_factor + (0.06 - sphere_factor) * planar
+            sx = adaptive_scales * tangent_factor
+            sy = adaptive_scales * tangent_factor
+            sz = np.clip(adaptive_scales * thickness_factor, min_scale, max_scale)
+
+            # Strong depth boundaries get a narrow profile so splats do not
+            # bridge foreground and background. This signal is present for
+            # layout reconstruction; other modes remain geometry-adaptive.
             if np.any(is_edge):
                 sx[is_edge] = adaptive_scales[is_edge] * 1.40
                 sy[is_edge] = np.clip(adaptive_scales[is_edge] * 0.50, min_scale, max_scale)
@@ -234,7 +291,11 @@ def initialize_from_pointcloud(
     opacity_logits = np.full((N, 1), init_logit, dtype=np.float32)
 
     # 5. Colors: convert uint8 RGB [0, 255] -> float [0, 1] -> SH0
-    rgb_float = point_cloud.colors.astype(np.float32) / 255.0
+    rgb_float = (
+        np.maximum(point_cloud.radiance, 0.0)
+        if point_cloud.radiance is not None
+        else srgb_to_linear(point_cloud.colors.astype(np.float32) / 255.0)
+    )
     features_dc = rgb_to_sh0(rgb_float)
 
     logger.info(

@@ -5,6 +5,7 @@ from panogs.io.depth import (
 )
 from panogs.io.gaussian_ply import (
     load_gaussian_ply,
+    save_gaussian_hdr_splat,
     save_gaussian_ply,
     save_gaussian_splat,
 )
@@ -13,6 +14,7 @@ from panogs.io.images import (
     inspect_image,
     load_image,
     load_image_as_numpy,
+    load_hdr_radiance,
     save_image,
 )
 from panogs.io.ply import (
@@ -26,6 +28,7 @@ __all__ = [
     "inspect_image",
     "load_image",
     "load_image_as_numpy",
+    "load_hdr_radiance",
     "save_image",
     "write_point_cloud_ply",
     "write_pointcloud",
@@ -35,4 +38,5 @@ __all__ = [
     "save_gaussian_ply",
     "load_gaussian_ply",
     "save_gaussian_splat",
+    "save_gaussian_hdr_splat",
 ]

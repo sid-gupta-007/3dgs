@@ -13,7 +13,7 @@ from PIL import Image
 
 from panogs.core.camera.spherical import equirectangular_rays, pixel_to_spherical
 from panogs.core.logging import get_logger
-from panogs.io.images import load_image_as_numpy
+from panogs.io.images import load_hdr_radiance, load_image_as_numpy, srgb_to_linear
 from panogs.reconstruction.depth.base import DepthEstimator
 from panogs.reconstruction.depth.midas import MiDaSDepthEstimator
 from panogs.reconstruction.pointcloud import PointCloud
@@ -222,6 +222,10 @@ def reconstruct_layout_panorama(
     logger.info(f"Loading panorama for 3D reconstruction: {image_path.name}")
 
     img_rgb = load_image_as_numpy(image_path, normalize_float=False, max_resolution=max_resolution)
+    if image_path.suffix.lower() in {".hdr", ".exr"}:
+        img_radiance = load_hdr_radiance(image_path, max_resolution=max_resolution)
+    else:
+        img_radiance = srgb_to_linear(img_rgb.astype(np.float32) / 255.0)
     H, W = img_rgb.shape[:2]
 
     # 1. Depth estimation: prefer Depth Anything V2 via cubemap for metric depth
@@ -351,11 +355,13 @@ def reconstruct_layout_panorama(
 
     flat_P = P.reshape(-1, 3).astype(np.float32)[keep_primary]
     flat_C = img_rgb.reshape(-1, 3).astype(np.uint8)[keep_primary]
+    flat_R = img_radiance.reshape(-1, 3).astype(np.float32)[keep_primary]
     flat_N = normals_final.reshape(-1, 3).astype(np.float32)[keep_primary]
     flat_E = edge_mask.reshape(-1)[keep_primary]
 
     all_points = [flat_P]
     all_colors = [flat_C]
+    all_radiance = [flat_R]
     all_normals = [flat_N]
     all_edges = [flat_E]
 
@@ -386,18 +392,21 @@ def reconstruct_layout_panorama(
             infilled_count = len(shell_pts)
             all_points.append(shell_pts)
             all_colors.append(shell_cols)
+            all_radiance.append(srgb_to_linear(shell_cols.astype(np.float32) / 255.0))
             all_normals.append(shell_norms)
             all_edges.append(shell_edge)
             logger.info(f"Synthesized {infilled_count:,} solid backing splats behind occluded furniture.")
 
     merged_points = np.vstack(all_points).astype(np.float32)
     merged_colors = np.vstack(all_colors).astype(np.uint8)
+    merged_radiance = np.vstack(all_radiance).astype(np.float32)
     merged_normals = np.vstack(all_normals).astype(np.float32)
     merged_edges = np.concatenate(all_edges)
 
     point_cloud = PointCloud(
         points=merged_points,
         colors=merged_colors,
+        radiance=merged_radiance,
         normals=merged_normals,
         metadata={
             "total_pixels": H * W,
@@ -426,4 +435,3 @@ def reconstruct_layout_panorama(
         logger.info(f"Exported point cloud PLY to {output_ply}")
 
     return point_cloud
-

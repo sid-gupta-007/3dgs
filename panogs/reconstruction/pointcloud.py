@@ -33,6 +33,7 @@ class PointCloud:
     confidence: Optional[np.ndarray] = None
     normals: Optional[np.ndarray] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    radiance: Optional[np.ndarray] = None
 
     def __post_init__(self):
         self.points = np.asarray(self.points, dtype=np.float32)
@@ -42,6 +43,10 @@ class PointCloud:
             raise ValueError(f"Points must have shape (N, 3), got {self.points.shape}")
         if self.colors.shape[0] != self.points.shape[0] or self.colors.shape[1] != 3:
             raise ValueError(f"Colors shape {self.colors.shape} does not match points {self.points.shape}")
+        if self.radiance is not None:
+            self.radiance = np.asarray(self.radiance, dtype=np.float32)
+            if self.radiance.shape != self.points.shape:
+                raise ValueError(f"Radiance shape {self.radiance.shape} does not match points {self.points.shape}")
 
     @property
     def num_points(self) -> int:
@@ -116,6 +121,7 @@ def backproject_depth_to_points(
     max_depth: float = 50.0,
     depth_edge_threshold: float = 0.0,
     camera_center: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    radiance: Optional[np.ndarray] = None,
 ) -> PointCloud:
     """
     Vectorized backprojection of depth and unit rays to 3D point cloud:
@@ -178,10 +184,12 @@ def backproject_depth_to_points(
 
     valid_points = flat_points[valid_mask].astype(np.float32)
     valid_colors = flat_colors[valid_mask].astype(np.uint8)
+    valid_radiance = radiance.reshape(-1, 3)[valid_mask].astype(np.float32) if radiance is not None else None
 
     return PointCloud(
         points=valid_points,
         colors=valid_colors,
+        radiance=valid_radiance,
         metadata={
             "total_pixels": H * W,
             "valid_points": int(np.sum(valid_mask)),
@@ -214,6 +222,11 @@ def reconstruct_from_image(
     # 1. Load image
     logger.info(f"Loading image for 3D reconstruction: {image_path.name}")
     img_rgb = load_image_as_numpy(image_path, normalize_float=False, max_resolution=max_resolution)
+    from panogs.io.images import load_hdr_radiance, srgb_to_linear
+    if image_path.suffix.lower() in {".hdr", ".exr"}:
+        img_radiance = load_hdr_radiance(image_path, max_resolution=max_resolution)
+    else:
+        img_radiance = srgb_to_linear(img_rgb.astype(np.float32) / 255.0)
     H, W = img_rgb.shape[:2]
 
     # 2. Run depth estimation
@@ -242,6 +255,7 @@ def reconstruct_from_image(
         rays=rays,
         depth_map=metric_depth,
         colors=img_rgb,
+        radiance=img_radiance,
         min_depth=min_depth * 0.9,
         max_depth=max_depth * 1.1,
         depth_edge_threshold=depth_edge_threshold,

@@ -35,10 +35,12 @@ To ensure gradient updates remain in valid physical domains, Gaussians are repre
 - Internal parameter: $o_{\text{logit}} = \ln \frac{\alpha}{1 - \alpha}$
 - Physical opacity: $\alpha = \sigma(o_{\text{logit}}) = \frac{1}{1 + \exp(-o_{\text{logit}})}$
 
-### D. Color Representation (Spherical Harmonics $SH_0$)
+### D. Color Representation (Linear-Radiance Spherical Harmonics $SH_0$)
 - Zeroth-order constant: $C_0 = \frac{1}{2\sqrt{\pi}} \approx 0.28209479177387814$
-- RGB to $SH_0$: $\mathbf{f}_{\text{dc}} = \frac{\text{RGB} - 0.5}{C_0}$
-- $SH_0$ to RGB: $\text{RGB} = \text{clamp}(\mathbf{f}_{\text{dc}} \cdot C_0 + 0.5, 0.0, 1.0)$
+- RGB to $SH_0$: $\mathbf{f}_{\text{dc}} = \frac{\text{RGB} - 0.5}{C_0}$, where RGB is linear-light radiance.
+- $SH_0$ to RGB: $\text{RGB} = \max(\mathbf{f}_{\text{dc}} \cdot C_0 + 0.5, 0.0)$. Values above 1.0 are retained by the float PLY representation for HDR.
+- The legacy 32-byte `.splat` format stores 8-bit color and clips radiance to the display range. PanoGS `.hdrsplat` and Gaussian PLY preserve float radiance; the viewer converts HDR color to display sRGB and its exposure control sets the visible highlight range.
+- `.hdrsplat` is PanoGS-specific (44 bytes per splat: XYZ, scale, float RGB radiance, float opacity, packed rotation); use `.splat` when interoperability with other viewers is required.
 
 ---
 

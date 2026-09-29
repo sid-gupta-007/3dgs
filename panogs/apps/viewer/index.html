@@ -647,26 +647,22 @@
             <button id="btn-toggle-lod" class="active">🌲 Octree Spatial LOD (ON)</button>
         </div>
 
-        <!-- Cinematic Lighting & Tone Mapping -->
-        <div class="section-title" style="margin-top: 4px;">Cinematic Tone Mapping & Color</div>
+        <!-- Exposure & Color -->
+        <div class="section-title" style="margin-top: 4px;">Exposure & Color</div>
         <div class="control-group">
             <div class="label-row">
-                <span>Exposure (ACES)</span>
-                <span class="val" id="exposure-label">1.05x</span>
+                <span>Exposure</span>
+                <span class="val" id="exposure-label">1.00x</span>
             </div>
-            <input type="range" id="exposure-slider" min="0.4" max="2.5" step="0.05" value="1.05">
+            <input type="range" id="exposure-slider" min="0.01" max="16" step="0.01" value="1.0">
         </div>
         <div class="control-group">
             <div class="label-row">
                 <span>Contrast Curve</span>
-                <span class="val" id="contrast-label">1.10x</span>
+                <span class="val" id="contrast-label">1.00x</span>
             </div>
-            <input type="range" id="contrast-slider" min="0.7" max="1.6" step="0.05" value="1.10">
+            <input type="range" id="contrast-slider" min="0.7" max="1.6" step="0.05" value="1.0">
         </div>
-        <div class="btn-group" style="margin-top: 2px; grid-template-columns: 1fr;">
-            <button id="btn-toggle-tonemap" class="active">🎬 ACES Filmic Tone Mapping (ON)</button>
-        </div>
-
         <!-- Movement & Camera -->
         <div class="section-title" style="margin-top: 4px;">Camera & Movement</div>
         <div class="control-group">
@@ -766,6 +762,8 @@
         let numGaussians = 0;
         let splatMesh = null;
         let splatGeometry = null;
+        let rawSplatBytes = null;
+        let splatFormat = "standard32";
 
         // Visual Quality Parameters
         let splatScaleMult = 1.0;
@@ -937,10 +935,11 @@
                 const f32 = new Float32Array(rawBytes.buffer);
                 const u8 = new Uint8Array(rawBytes.buffer);
                 for (let i = 0; i < num; i++) {
-                    const sx = f32[i * 8 + 3];
-                    const sy = f32[i * 8 + 4];
-                    const sz = f32[i * 8 + 5];
-                    const alpha = u8[i * 32 + 27] / 255.0;
+                    const base = i * (splatFormat === "hdr44" ? 11 : 8);
+                    const sx = f32[base + 3];
+                    const sy = f32[base + 4];
+                    const sz = f32[base + 5];
+                    const alpha = splatFormat === "hdr44" ? f32[i * 11 + 9] : u8[i * 32 + 27] / 255.0;
                     rawImportance[i] = Math.max(1e-6, sx * sy * sz) * alpha;
                 }
             }
@@ -1132,7 +1131,7 @@
             }
         `;
 
-        // Fragment Shader: Smooth Exponential Splat Falloff + ACES Filmic Tone Mapping
+        // Fragment Shader: Smooth Exponential Splat Falloff
         const fsSource = `
             precision highp float;
 
@@ -1143,15 +1142,12 @@
             uniform float u_min_alpha;
             uniform float u_exposure;
             uniform float u_contrast;
-            uniform int u_tonemap_enabled;
+            uniform int u_hdr_radiance;
 
-            vec3 aces_tonemap(vec3 x) {
-                const float a = 2.51;
-                const float b = 0.03;
-                const float c = 2.43;
-                const float d = 0.59;
-                const float e = 0.14;
-                return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+            vec3 linear_to_srgb(vec3 x) {
+                vec3 low = 12.92 * x;
+                vec3 high = 1.055 * pow(max(x, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+                return mix(high, low, 1.0 - step(vec3(0.0031308), x));
             }
 
             void main() {
@@ -1168,11 +1164,10 @@
 
                 vec3 col = v_color.rgb;
 
-                // Exposure & Dynamic Range Tone Mapping
+                // User-controlled exposure
                 col *= u_exposure;
-
-                if (u_tonemap_enabled == 1) {
-                    col = aces_tonemap(col);
+                if (u_hdr_radiance == 1) {
+                    col = linear_to_srgb(col);
                 }
 
                 // Cinematic Contrast Curve
@@ -1280,8 +1275,9 @@
 
             for (let i = 0; i < activeCount; i++) {
                 const srcIdx = sortedActiveBuffer[i];
-                const srcF32Base = srcIdx * 8;
-                const srcU8Base = srcIdx * 32;
+                const isHdr = splatFormat === "hdr44";
+                const srcF32Base = srcIdx * (isHdr ? 11 : 8);
+                const srcU8Base = srcIdx * (isHdr ? 44 : 32);
 
                 const dstF32Base = i * 3;
                 const dstU8Base = i * 4;
@@ -1294,15 +1290,23 @@
                 scaleArr[dstF32Base + 1] = srcF32[srcF32Base + 4];
                 scaleArr[dstF32Base + 2] = srcF32[srcF32Base + 5];
 
-                colorArr[dstU8Base + 0] = srcU8[srcU8Base + 24];
-                colorArr[dstU8Base + 1] = srcU8[srcU8Base + 25];
-                colorArr[dstU8Base + 2] = srcU8[srcU8Base + 26];
-                colorArr[dstU8Base + 3] = srcU8[srcU8Base + 27];
+                if (isHdr) {
+                    colorArr[dstU8Base + 0] = srcF32[srcF32Base + 6];
+                    colorArr[dstU8Base + 1] = srcF32[srcF32Base + 7];
+                    colorArr[dstU8Base + 2] = srcF32[srcF32Base + 8];
+                    colorArr[dstU8Base + 3] = srcF32[srcF32Base + 9];
+                } else {
+                    colorArr[dstU8Base + 0] = srcU8[srcU8Base + 24] / 255.0;
+                    colorArr[dstU8Base + 1] = srcU8[srcU8Base + 25] / 255.0;
+                    colorArr[dstU8Base + 2] = srcU8[srcU8Base + 26] / 255.0;
+                    colorArr[dstU8Base + 3] = srcU8[srcU8Base + 27] / 255.0;
+                }
 
-                quatArr[dstU8Base + 0] = srcU8[srcU8Base + 28];
-                quatArr[dstU8Base + 1] = srcU8[srcU8Base + 29];
-                quatArr[dstU8Base + 2] = srcU8[srcU8Base + 30];
-                quatArr[dstU8Base + 3] = srcU8[srcU8Base + 31];
+                const quatBase = srcU8Base + (isHdr ? 40 : 28);
+                quatArr[dstU8Base + 0] = srcU8[quatBase + 0];
+                quatArr[dstU8Base + 1] = srcU8[quatBase + 1];
+                quatArr[dstU8Base + 2] = srcU8[quatBase + 2];
+                quatArr[dstU8Base + 3] = srcU8[quatBase + 3];
             }
 
             attrPos.needsUpdate = true;
@@ -1317,10 +1321,12 @@
         // ─────────────────────────────────────────────────────────────
         // Load Splat Buffer & Construct Geometry + Octree
         // ─────────────────────────────────────────────────────────────
-        async function loadSplatBuffer(buffer) {
-            const bytesPerGaussian = 32;
+        async function loadSplatBuffer(buffer, format = "standard32") {
+            splatFormat = format;
+            const isHdr = splatFormat === "hdr44";
+            const bytesPerGaussian = isHdr ? 44 : 32;
             if (!buffer || buffer.byteLength < bytesPerGaussian || buffer.byteLength % bytesPerGaussian !== 0) {
-                throw new Error("This file is not a valid 32-byte-per-splat .splat file.");
+                throw new Error(`Invalid ${isHdr ? "HDR" : "standard"} splat data.`);
             }
             numGaussians = Math.floor(buffer.byteLength / bytesPerGaussian);
 
@@ -1338,9 +1344,10 @@
 
             rawPositions = new Float32Array(numGaussians * 3);
             for (let i = 0; i < numGaussians; i++) {
-                rawPositions[i * 3 + 0] = srcF32[i * 8 + 0];
-                rawPositions[i * 3 + 1] = srcF32[i * 8 + 1];
-                rawPositions[i * 3 + 2] = srcF32[i * 8 + 2];
+                const base = i * (isHdr ? 11 : 8);
+                rawPositions[i * 3 + 0] = srcF32[base + 0];
+                rawPositions[i * 3 + 1] = srcF32[base + 1];
+                rawPositions[i * 3 + 2] = srcF32[base + 2];
             }
 
             // Build Spatial Collision Obstacle Grid for solid objects
@@ -1367,12 +1374,12 @@
             // Instanced Attributes
             const positions = new Float32Array(numGaussians * 3);
             const scales = new Float32Array(numGaussians * 3);
-            const colors = new Uint8Array(numGaussians * 4);
+            const colors = new Float32Array(numGaussians * 4);
             const quats = new Uint8Array(numGaussians * 4);
 
             for (let i = 0; i < numGaussians; i++) {
-                const baseF32 = i * 8;
-                const baseU8 = i * 32;
+                const baseF32 = i * (isHdr ? 11 : 8);
+                const baseU8 = i * (isHdr ? 44 : 32);
 
                 positions[i * 3 + 0] = srcF32[baseF32 + 0];
                 positions[i * 3 + 1] = srcF32[baseF32 + 1];
@@ -1382,20 +1389,28 @@
                 scales[i * 3 + 1] = srcF32[baseF32 + 4];
                 scales[i * 3 + 2] = srcF32[baseF32 + 5];
 
-                colors[i * 4 + 0] = srcU8[baseU8 + 24];
-                colors[i * 4 + 1] = srcU8[baseU8 + 25];
-                colors[i * 4 + 2] = srcU8[baseU8 + 26];
-                colors[i * 4 + 3] = srcU8[baseU8 + 27];
+                if (isHdr) {
+                    colors[i * 4 + 0] = srcF32[baseF32 + 6];
+                    colors[i * 4 + 1] = srcF32[baseF32 + 7];
+                    colors[i * 4 + 2] = srcF32[baseF32 + 8];
+                    colors[i * 4 + 3] = srcF32[baseF32 + 9];
+                } else {
+                    colors[i * 4 + 0] = srcU8[baseU8 + 24] / 255.0;
+                    colors[i * 4 + 1] = srcU8[baseU8 + 25] / 255.0;
+                    colors[i * 4 + 2] = srcU8[baseU8 + 26] / 255.0;
+                    colors[i * 4 + 3] = srcU8[baseU8 + 27] / 255.0;
+                }
 
-                quats[i * 4 + 0] = srcU8[baseU8 + 28];
-                quats[i * 4 + 1] = srcU8[baseU8 + 29];
-                quats[i * 4 + 2] = srcU8[baseU8 + 30];
-                quats[i * 4 + 3] = srcU8[baseU8 + 31];
+                const quatBase = baseU8 + (isHdr ? 40 : 28);
+                quats[i * 4 + 0] = srcU8[quatBase + 0];
+                quats[i * 4 + 1] = srcU8[quatBase + 1];
+                quats[i * 4 + 2] = srcU8[quatBase + 2];
+                quats[i * 4 + 3] = srcU8[quatBase + 3];
             }
 
             splatGeometry.setAttribute("a_position", new THREE.InstancedBufferAttribute(positions, 3));
             splatGeometry.setAttribute("a_scale", new THREE.InstancedBufferAttribute(scales, 3));
-            splatGeometry.setAttribute("a_color", new THREE.InstancedBufferAttribute(colors, 4, true));
+            splatGeometry.setAttribute("a_color", new THREE.InstancedBufferAttribute(colors, 4));
             splatGeometry.setAttribute("a_quat", new THREE.InstancedBufferAttribute(quats, 4, true));
 
             const focal = (window.innerHeight / 2.0) / Math.tan((camera.fov * Math.PI) / 360.0);
@@ -1413,7 +1428,7 @@
                     u_sharpness_boost: { value: sharpnessBoost },
                     u_exposure: { value: exposureVal },
                     u_contrast: { value: contrastVal },
-                    u_tonemap_enabled: { value: tonemapEnabled },
+                    u_hdr_radiance: { value: isHdr ? 1 : 0 },
                 },
                 transparent: true,
                 depthWrite: false,
@@ -1560,7 +1575,7 @@
                 if (!res.ok) throw new Error(`Scene could not be loaded (HTTP ${res.status}).`);
                 const arrayBuffer = await res.arrayBuffer();
                 if (!arrayBuffer.byteLength) throw new Error("The scene file is empty.");
-                await loadSplatBuffer(arrayBuffer);
+                await loadSplatBuffer(arrayBuffer, res.headers.get("X-PanoGS-Format") || "standard32");
                 loader.style.display = "none";
                 status.textContent = `${numGaussians.toLocaleString()} splats loaded`;
                 status.className = "success";
@@ -1721,10 +1736,9 @@
             if (splatMesh) splatMesh.material.uniforms.u_min_alpha.value = minAlphaCutoff;
         });
 
-        // Tone Mapping & Color Grading Controls
-        let exposureVal = 1.05;
-        let contrastVal = 1.10;
-        let tonemapEnabled = 1;
+        // Exposure & Color Controls
+        let exposureVal = 1.0;
+        let contrastVal = 1.0;
 
         document.getElementById("exposure-slider").addEventListener("input", e => {
             exposureVal = parseFloat(e.target.value);
@@ -1737,14 +1751,6 @@
             document.getElementById("contrast-label").textContent = contrastVal.toFixed(2) + "x";
             if (splatMesh) splatMesh.material.uniforms.u_contrast.value = contrastVal;
         });
-
-        document.getElementById("btn-toggle-tonemap").onclick = () => {
-            tonemapEnabled = tonemapEnabled === 1 ? 0 : 1;
-            const btn = document.getElementById("btn-toggle-tonemap");
-            btn.classList.toggle("active", tonemapEnabled === 1);
-            btn.textContent = tonemapEnabled === 1 ? "🎬 ACES Filmic Tone Mapping (ON)" : "⚡ Raw Linear RGB (OFF)";
-            if (splatMesh) splatMesh.material.uniforms.u_tonemap_enabled.value = tonemapEnabled;
-        };
 
         // Background toggles
         function setBg(colorHex, activeBtn) {
@@ -2060,13 +2066,24 @@
             await loadSceneFile(apiUrl);
         }
 
-        // Auto Load Scene (supports ?scene=comfy_cafe_main.splat or ?model=...)
-        const urlParams = new URLSearchParams(window.location.search);
-        const sceneParam = urlParams.get('scene') || urlParams.get('model') || 'comfy_cafe_main.splat';
-        currentSceneId = sceneParam;
-        const sceneUrl = `/api/scene.splat?scene=${encodeURIComponent(sceneParam)}`;
-        loadSceneFile(sceneUrl);
-        initSceneCatalog(sceneParam);
+        // Explicit URL selection wins; otherwise load the exact file passed to `panogs view`.
+        async function startViewer() {
+            const urlParams = new URLSearchParams(window.location.search);
+            let sceneParam = urlParams.get('scene') || urlParams.get('model');
+            if (!sceneParam) {
+                try {
+                    const response = await fetch('/api/config');
+                    const config = await response.json();
+                    sceneParam = config.default_scene_id;
+                } catch (error) {
+                    sceneParam = '__current_model__';
+                }
+            }
+            currentSceneId = sceneParam;
+            const sceneUrl = `/api/scene.splat?scene=${encodeURIComponent(sceneParam)}`;
+            await Promise.all([loadSceneFile(sceneUrl), initSceneCatalog(sceneParam)]);
+        }
+        startViewer();
         animate();
     </script>
 </body>
