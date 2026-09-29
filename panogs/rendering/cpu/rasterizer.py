@@ -93,15 +93,16 @@ def project_gaussians_to_2d(
 
     # 6. Compute 2D covariance: Sigma_2D = J @ cov3d_cam @ J^T
     cov2d = np.matmul(J, np.matmul(cov3d_cam, J.transpose(0, 2, 1)))
+    cov2d = np.nan_to_num(cov2d, nan=0.0, posinf=1000.0, neginf=-1000.0)
 
     # Add low-pass filter to diagonal
     cov2d[:, 0, 0] += low_pass_filter
     cov2d[:, 1, 1] += low_pass_filter
 
     # 7. Compute bounding box radii (3 * sqrt(max(cov_xx, cov_yy)))
-    r_x = 3.0 * np.sqrt(np.maximum(cov2d[:, 0, 0], 1e-4))
-    r_y = 3.0 * np.sqrt(np.maximum(cov2d[:, 1, 1], 1e-4))
-    radii = np.maximum(r_x, r_y).astype(np.float32)
+    r_x = 3.0 * np.sqrt(np.clip(cov2d[:, 0, 0], 1e-4, 10000.0))
+    r_y = 3.0 * np.sqrt(np.clip(cov2d[:, 1, 1], 1e-4, 10000.0))
+    radii = np.clip(np.maximum(r_x, r_y), 0.1, max(camera.width, camera.height) * 2.0).astype(np.float32)
 
     return vis_idx, tz, screen_pts, cov2d, radii
 
@@ -156,7 +157,7 @@ def render_gaussians_cpu(
     b = cov2d[:, 0, 1]
     c = cov2d[:, 1, 1]
     dets = a * c - b * b
-    valid_dets = dets > 1e-6
+    valid_dets = np.isfinite(dets) & (dets > 1e-6) & np.isfinite(screen_pts[:, 0]) & np.isfinite(screen_pts[:, 1]) & np.isfinite(radii)
 
     # Buffers for alpha compositing
     # Accumulated color C (H, W, 3) float32 in [0, 1]
@@ -177,10 +178,10 @@ def render_gaussians_cpu(
         det = dets[i]
 
         # Bounding box in integer pixel coordinates
-        u_min = max(0, int(np.floor(cx - rad)))
-        u_max = min(W - 1, int(np.ceil(cx + rad)))
-        v_min = max(0, int(np.floor(cy - rad)))
-        v_max = min(H - 1, int(np.ceil(cy + rad)))
+        u_min = max(0, min(W - 1, int(np.floor(cx - rad))))
+        u_max = min(W - 1, max(0, int(np.ceil(cx + rad))))
+        v_min = max(0, min(H - 1, int(np.floor(cy - rad))))
+        v_max = min(H - 1, max(0, int(np.ceil(cy + rad))))
 
         if u_min > u_max or v_min > v_max:
             continue

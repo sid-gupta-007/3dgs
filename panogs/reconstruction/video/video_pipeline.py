@@ -22,19 +22,23 @@ def estimate_camera_motion(
     prev_rgb: np.ndarray,
     curr_rgb: np.ndarray,
     K: np.ndarray,
+    prev_depth: Optional[np.ndarray] = None,
+    curr_depth: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Estimate relative camera rotation R and unit translation t between adjacent frames
-    using ORB feature matching and the Essential Matrix 5-point RANSAC algorithm.
+    Estimate relative camera rotation R and metric translation t between adjacent frames
+    using ORB feature matching, Essential Matrix 5-point RANSAC, and depth-based metric scale recovery.
 
     Args:
         prev_rgb: (H, W, 3) previous RGB frame.
         curr_rgb: (H, W, 3) current RGB frame.
         K: (3, 3) camera intrinsic matrix.
+        prev_depth: Optional (H, W) previous metric depth map.
+        curr_depth: Optional (H, W) current metric depth map.
 
     Returns:
         R: (3, 3) relative rotation matrix.
-        t: (3, 1) relative translation direction vector.
+        t: (3, 1) relative metric translation vector.
     """
     gray1 = cv2.cvtColor(prev_rgb, cv2.COLOR_RGB2GRAY)
     gray2 = cv2.cvtColor(curr_rgb, cv2.COLOR_RGB2GRAY)
@@ -44,24 +48,61 @@ def estimate_camera_motion(
     kp2, des2 = orb.detectAndCompute(gray2, None)
 
     if des1 is None or des2 is None or len(kp1) < 8 or len(kp2) < 8:
-        return np.eye(3, dtype=np.float32), np.array([[0.0], [0.0], [0.1]], dtype=np.float32)
+        return np.eye(3, dtype=np.float32), np.array([[0.0], [0.0], [0.05]], dtype=np.float32)
 
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     matches = bf.match(des1, des2)
     matches = sorted(matches, key=lambda m: m.distance)
 
     if len(matches) < 8:
-        return np.eye(3, dtype=np.float32), np.array([[0.0], [0.0], [0.1]], dtype=np.float32)
+        return np.eye(3, dtype=np.float32), np.array([[0.0], [0.0], [0.05]], dtype=np.float32)
 
-    pts1 = np.float32([kp1[m.queryIdx].pt for m in matches[:200]])
-    pts2 = np.float32([kp2[m.trainIdx].pt for m in matches[:200]])
+    pts1 = np.float32([kp1[m.queryIdx].pt for m in matches[:300]])
+    pts2 = np.float32([kp2[m.trainIdx].pt for m in matches[:300]])
 
     E, inliers = cv2.findEssentialMat(pts1, pts2, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
     if E is None or E.shape != (3, 3):
-        return np.eye(3, dtype=np.float32), np.array([[0.0], [0.0], [0.1]], dtype=np.float32)
+        return np.eye(3, dtype=np.float32), np.array([[0.0], [0.0], [0.05]], dtype=np.float32)
 
-    _, R, t, mask = cv2.recoverPose(E, pts1, pts2, K)
-    return R.astype(np.float32), t.astype(np.float32)
+    num_inliers, R, t_unit, mask = cv2.recoverPose(E, pts1, pts2, K)
+
+    step_scale = 0.10  # Fallback default scale
+    if prev_depth is not None and curr_depth is not None and num_inliers >= 6:
+        H, W = prev_depth.shape[:2]
+        inlier_mask = (mask.ravel() > 0)
+        pts1_inliers = pts1[inlier_mask]
+        pts2_inliers = pts2[inlier_mask]
+
+        u1 = np.clip(np.round(pts1_inliers[:, 0]).astype(int), 0, W - 1)
+        v1 = np.clip(np.round(pts1_inliers[:, 1]).astype(int), 0, H - 1)
+        u2 = np.clip(np.round(pts2_inliers[:, 0]).astype(int), 0, W - 1)
+        v2 = np.clip(np.round(pts2_inliers[:, 1]).astype(int), 0, H - 1)
+
+        z1 = prev_depth[v1, u1]
+        z2 = curr_depth[v2, u2]
+
+        valid_z = (z1 > 0.2) & (z1 < 20.0) & (z2 > 0.2) & (z2 < 20.0)
+        if np.sum(valid_z) >= 5:
+            fx, fy = K[0, 0], K[1, 1]
+            cx, cy = K[0, 2], K[1, 2]
+
+            x1_3d = (pts1_inliers[valid_z, 0] - cx) * z1[valid_z] / fx
+            y1_3d = (pts1_inliers[valid_z, 1] - cy) * z1[valid_z] / fy
+            p1_3d = np.stack([x1_3d, y1_3d, z1[valid_z]], axis=-1)
+
+            x2_3d = (pts2_inliers[valid_z, 0] - cx) * z2[valid_z] / fx
+            y2_3d = (pts2_inliers[valid_z, 1] - cy) * z2[valid_z] / fy
+            p2_3d = np.stack([x2_3d, y2_3d, z2[valid_z]], axis=-1)
+
+            p1_rot = np.matmul(p1_3d, R.T)
+            diff_3d = p2_3d - p1_rot
+            estimated_scale = float(np.median(np.linalg.norm(diff_3d, axis=-1)))
+
+            if 0.01 <= estimated_scale <= 1.5:
+                step_scale = estimated_scale
+
+    t_metric = (t_unit * step_scale).astype(np.float32)
+    return R.astype(np.float32), t_metric
 
 
 def reconstruct_from_video(
@@ -133,21 +174,30 @@ def reconstruct_from_video(
     y_cam = (v_grid - K[1, 2]) / K[1, 1]
     rays_cam = np.stack([x_cam, y_cam, np.ones_like(x_cam)], axis=-1)  # (H, W, 3)
 
+    prev_depth: Optional[np.ndarray] = None
+
     for i, kf in enumerate(keyframes):
         rgb = kf.image_rgb
 
-        # Estimate camera motion relative to previous frame
-        if i > 0:
-            R_rel, t_rel = estimate_camera_motion(keyframes[i - 1].image_rgb, rgb, K)
-            # Accumulate pose: R_curr = R_rel @ R_prev, C_curr = C_prev + R_prev.T @ (t_rel * scale)
-            step_scale = 0.15  # Average walking step ~15cm per keyframe
-            C_w = C_w + np.matmul(R_cw.T, t_rel * step_scale)
-            R_cw = np.matmul(R_rel, R_cw)
-
-        # Infer metric depth
+        # Infer metric depth first
         res = depth_estimator.estimate(rgb)
         depth = res.depth_map.astype(np.float32)
         depth = np.clip(depth, 0.3, 15.0)
+
+        # Estimate camera motion relative to previous frame using 3D depth-aligned metric tracking
+        if i > 0:
+            R_rel, t_rel = estimate_camera_motion(
+                keyframes[i - 1].image_rgb,
+                rgb,
+                K,
+                prev_depth=prev_depth,
+                curr_depth=depth,
+            )
+            # Accumulate pose: R_curr = R_rel @ R_prev, C_curr = C_prev + R_prev.T @ t_metric
+            C_w = C_w + np.matmul(R_cw.T, t_rel)
+            R_cw = np.matmul(R_rel, R_cw)
+
+        prev_depth = depth
 
         # Filter out flying depth edge transitions (rubber-sheet webs between objects and walls)
         dy, dx = np.gradient(depth)

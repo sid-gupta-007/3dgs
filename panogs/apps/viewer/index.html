@@ -489,13 +489,52 @@
             opacity: 1;
             pointer-events: auto;
         }
+
+        /* Compact, legible viewer chrome across desktop and touch screens. */
+        :root { --panel-bg: rgba(13, 16, 25, .94); --panel-border: rgba(148, 163, 184, .18); }
+        header { gap: 18px; max-width: calc(100vw - 40px); }
+        .controls-panel { width: 296px; gap: 15px; scrollbar-width: thin; }
+        .stats-hud { gap: 22px; }
+        .badge { white-space: nowrap; }
+        button, select { min-height: 36px; }
+        button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 2px; }
+        #load-status {
+            position: absolute; z-index: 20; top: 78px; left: 50%; transform: translateX(-50%);
+            max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px; border-radius: 10px;
+            color: #e2e8f0; background: rgba(15, 23, 42, .94); border: 1px solid rgba(148,163,184,.24);
+            font-size: 13px; text-align: center; box-shadow: 0 12px 32px #0008; display: none;
+        }
+        #load-status.error { color: #fecaca; border-color: rgba(248,113,113,.45); }
+        #load-status.success { color: #bbf7d0; border-color: rgba(74,222,128,.35); }
+        #file-picker { display: none; }
+        @media (max-width: 900px) {
+            header { top: 10px; left: 10px; padding: 8px 11px; gap: 10px; }
+            header > .badge { display: none; }
+            .scene-select-input { max-width: 170px; }
+            .stats-hud { top: 66px; right: 10px; padding: 8px 10px; gap: 12px; }
+            .stat-item:nth-child(4), .stat-item:nth-child(5) { display: none; }
+            .controls-panel { top: 66px; left: 10px; width: min(280px, calc(100vw - 20px)); max-height: calc(100dvh - 126px); }
+            .bottom-bar { bottom: 10px; max-width: calc(100vw - 20px); overflow-x: auto; justify-content: flex-start; white-space: nowrap; }
+        }
+        @media (max-width: 560px) {
+            header { right: 10px; max-width: none; }
+            .logo-text h1 { font-size: 14px; }
+            .scene-switcher-header { margin-left: auto; }
+            #btn-open-tab { display: none; }
+            .stats-hud { left: 10px; right: 10px; top: 58px; justify-content: space-around; }
+            .controls-panel { top: 112px; max-height: calc(100dvh - 164px); }
+            .bottom-bar { left: 10px; transform: none; font-size: 11px; }
+            #load-status { top: auto; bottom: 60px; }
+        }
     </style>
 </head>
 <body>
     <div id="canvas-container"></div>
 
     <!-- Drop Zone -->
-    <div id="drop-overlay">Drop .splat or .ply file here to view</div>
+    <div id="drop-overlay">Drop a .splat file anywhere to open it</div>
+    <div id="load-status" role="status" aria-live="polite"></div>
+    <input id="file-picker" type="file" accept=".splat,application/octet-stream">
 
     <!-- Header -->
     <header class="glass-panel">
@@ -509,7 +548,8 @@
             <select id="header-scene-select" class="scene-select-input" title="Switch 3D Scene"></select>
             <button id="btn-open-tab" class="btn-tab-link" title="Open active scene in new tab">↗ New Tab</button>
         </div>
-        <div class="badge" id="view-mode-badge">WebGL Three.js + Octree LOD</div>
+        <button id="btn-import" title="Open a local .splat file">＋ Open splat</button>
+        <div class="badge" id="view-mode-badge">Gaussian viewer</div>
     </header>
 
     <!-- Stats HUD -->
@@ -703,7 +743,9 @@
 
         const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", preserveDrawingBuffer: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.0));
+        // Large HiDPI buffers multiply fragment work. 1.5 keeps the viewer crisp
+        // while avoiding the 4x pixel cost of a 2x device-pixel ratio.
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
         container.appendChild(renderer.domElement);
 
         // Grid helper
@@ -738,17 +780,23 @@
         let cameraPitch = 0.0;
         let cameraPos = [0.0, 0.0, 0.0];
 
-        // Buffers for Sorting & Octree LOD
-        let rawSplatBytes = null;
-        let rawPositions = null;
-        let sortedSplatBytes = null;
-        let sortDepths = null;
+        // State tracking for sort throttling
         let lastSortedEye = [0, 0, 0];
         let lastSortedYaw = -999;
         let lastSortedPitch = -999;
+        let lastSortAt = 0;
+        const MIN_SORT_INTERVAL_MS = 80;
 
-        // Active visible indices after frustum + LOD selection
-        let activeIndices = new Int32Array(0);
+        // Reusable Static Buffers for Depth Sort & LOD (Zero GC / Allocations per Frame)
+        let sortCountsBuffer = new Uint32Array(65536);
+        let sortStartsBuffer = new Uint32Array(65536);
+        let sortKeysBuffer = new Uint16Array(0);
+        let sortDepthsBuffer = new Float32Array(0);
+        let visibleIndicesBuffer = new Int32Array(0);
+        let sortedActiveBuffer = new Int32Array(0);
+        let rawImportance = new Float32Array(0);
+
+        // Active visible indices counter
         let activeCount = 0;
 
         // Frustum helper
@@ -756,7 +804,7 @@
         const frustum = new THREE.Frustum();
 
         // ─────────────────────────────────────────────────────────────
-        // Spatial Octree for Runtime Level-of-Detail & Frustum Culling
+        // Spatial Octree for Deterministic Importance-Based LOD & Frustum Culling
         // ─────────────────────────────────────────────────────────────
         class OctreeNode {
             constructor(minX, minY, minZ, maxX, maxY, maxZ, depth) {
@@ -777,8 +825,12 @@
                 this.sphere = new THREE.Sphere(new THREE.Vector3(...this.center), this.radius);
             }
 
-            subdivide(positions, maxDepth, maxPointsPerLeaf) {
+            subdivide(positions, importance, maxDepth, maxPointsPerLeaf) {
                 if (this.depth >= maxDepth || this.indices.length <= maxPointsPerLeaf) {
+                    // Sort leaf indices deterministically by Gaussian importance (highest significance first)
+                    if (this.indices && this.indices.length > 1 && importance && importance.length > 0) {
+                        this.indices.sort((a, b) => importance[b] - importance[a]);
+                    }
                     return;
                 }
 
@@ -810,49 +862,54 @@
                 this.indices = null; // Free parent index array
 
                 for (let c = 0; c < 8; c++) {
-                    this.children[c].subdivide(positions, maxDepth, maxPointsPerLeaf);
+                    this.children[c].subdivide(positions, importance, maxDepth, maxPointsPerLeaf);
                 }
             }
 
-            gatherLOD(eyeX, eyeY, eyeZ, frustum, outList, isLodActive) {
+            gatherLOD(eyeX, eyeY, eyeZ, frustum, visibleOut, isLodActive) {
                 // 1. Frustum Culling
                 if (!frustum.intersectsSphere(this.sphere)) {
                     return;
                 }
 
-                // 2. If leaf node: apply distance LOD
+                // 2. If leaf node: apply deterministic importance LOD
                 if (this.children === null) {
                     if (!this.indices || this.indices.length === 0) return;
 
-                    let stride = 1;
+                    let ratio = 1.0;
                     if (isLodActive) {
                         const dist = Math.hypot(eyeX - this.center[0], eyeY - this.center[1], eyeZ - this.center[2]);
-                        if (dist > 14.0) {
-                            stride = 4; // LOD 2: 25% splats
-                        } else if (dist > 7.0) {
-                            stride = 2; // LOD 1: 50% splats
+                        if (dist > 16.0) {
+                            ratio = 0.25; // LOD 2: top 25% most important Gaussians
+                        } else if (dist > 8.0) {
+                            ratio = 0.50; // LOD 1: top 50% most important Gaussians
                         } else {
-                            stride = 1; // LOD 0: 100% full detail
+                            ratio = 1.00; // LOD 0: 100% full detail
                         }
                     }
 
                     const len = this.indices.length;
-                    for (let i = 0; i < len; i += stride) {
-                        outList.push(this.indices[i]);
+                    const takeCount = ratio >= 0.99 ? len : Math.max(1, Math.floor(len * ratio));
+                    const dstBuf = visibleOut.buffer;
+                    let dstIdx = visibleOut.count;
+
+                    for (let i = 0; i < takeCount; i++) {
+                        dstBuf[dstIdx++] = this.indices[i];
                     }
+                    visibleOut.count = dstIdx;
                     return;
                 }
 
                 // 3. Recurse into children
                 for (let c = 0; c < 8; c++) {
-                    this.children[c].gatherLOD(eyeX, eyeY, eyeZ, frustum, outList, isLodActive);
+                    this.children[c].gatherLOD(eyeX, eyeY, eyeZ, frustum, visibleOut, isLodActive);
                 }
             }
         }
 
         let octreeRoot = null;
 
-        function buildSpatialOctree(positions, num) {
+        function buildSpatialOctree(positions, num, rawBytes) {
             if (num <= 0) return;
 
             let minX = Infinity, minY = Infinity, minZ = Infinity;
@@ -870,9 +927,23 @@
                 if (z > maxZ) maxZ = z;
             }
 
-            // Expand slightly
+            // Expand bounds slightly
             minX -= 0.1; minY -= 0.1; minZ -= 0.1;
             maxX += 0.1; maxY += 0.1; maxZ += 0.1;
+
+            // Compute LightGaussian-style significance scores for deterministic LOD ordering
+            rawImportance = new Float32Array(num);
+            if (rawBytes) {
+                const f32 = new Float32Array(rawBytes.buffer);
+                const u8 = new Uint8Array(rawBytes.buffer);
+                for (let i = 0; i < num; i++) {
+                    const sx = f32[i * 8 + 3];
+                    const sy = f32[i * 8 + 4];
+                    const sz = f32[i * 8 + 5];
+                    const alpha = u8[i * 32 + 27] / 255.0;
+                    rawImportance[i] = Math.max(1e-6, sx * sy * sz) * alpha;
+                }
+            }
 
             octreeRoot = new OctreeNode(minX, minY, minZ, maxX, maxY, maxZ, 0);
             octreeRoot.indices = new Array(num);
@@ -880,7 +951,7 @@
                 octreeRoot.indices[i] = i;
             }
 
-            octreeRoot.subdivide(positions, 4, 20000);
+            octreeRoot.subdivide(positions, rawImportance, 4, 15000);
         }
 
         function toggleCollision() {
@@ -929,7 +1000,7 @@
         });
 
         // ─────────────────────────────────────────────────────────────
-        // Vertex Shader: Projected 2D Gaussian Ellipse with Sharp Clamps
+        // Vertex Shader: Mip-Splatting Scale Filter + StopThePop Clamps
         // ─────────────────────────────────────────────────────────────
         const vsSource = `
             attribute vec3 a_position;
@@ -961,14 +1032,15 @@
             }
 
             void main() {
-                v_color = a_color;
-
                 vec4 p_cam = modelViewMatrix * vec4(a_position, 1.0);
                 float z = -p_cam.z;
                 if (z <= 0.04) {
                     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
                     return;
                 }
+
+                // StopThePop: Smooth opacity attenuation near near-plane to avoid sudden clipping pop
+                float near_fade = smoothstep(0.04, 0.12, z);
 
                 vec4 q = normalize(a_quat * 2.0 - 1.0);
                 mat3 R = quatToMat3(q);
@@ -996,16 +1068,23 @@
                 mat3x2 TS = T * Sigma;
                 mat2 V = TS * transpose(T);
 
-                // Anti-Aliasing Lowpass Padding: Reduced by Sharpness Booster to eliminate blanket blur
-                float pad = mix(0.24, 0.06, clamp(u_sharpness_boost * 0.7, 0.0, 1.0));
-                V[0][0] += pad;
-                V[1][1] += pad;
+                // Mip-Splatting: Anti-Aliasing 2D low-pass dilation filter with scale compensation (Yu et al., 2023)
+                float det_unfiltered = max(1e-6, V[0][0] * V[1][1] - V[0][1] * V[0][1]);
+                float pad = mix(0.28, 0.08, clamp(u_sharpness_boost * 0.6, 0.0, 1.0));
+                mat2 V_filtered = V;
+                V_filtered[0][0] += pad;
+                V_filtered[1][1] += pad;
+                float det_filtered = max(1e-6, V_filtered[0][0] * V_filtered[1][1] - V_filtered[0][1] * V_filtered[0][1]);
 
-                float a = V[0][0];
-                float b = V[0][1];
-                float c = V[1][1];
+                // Radiant energy compensation rho = sqrt(det(V) / det(V_filtered))
+                float rho = sqrt(clamp(det_unfiltered / det_filtered, 0.0, 1.0));
+                v_color = vec4(a_color.rgb, a_color.a * rho * near_fade);
 
-                float det = a * c - b * b;
+                float a = V_filtered[0][0];
+                float b = V_filtered[0][1];
+                float c = V_filtered[1][1];
+                float det = det_filtered;
+
                 if (det <= 0.00005) {
                     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
                     return;
@@ -1019,7 +1098,7 @@
                 float lambda1 = mid + term;
                 float lambda2 = max(0.001, mid - term);
 
-                // Screen-space radius at 3.0σ (Aholo uses ~2.83σ)
+                // Screen-space radius at 3.0 sigma
                 float r1 = 3.0 * sqrt(max(0.05, lambda1));
                 float r2 = 3.0 * sqrt(max(0.05, lambda2));
 
@@ -1105,20 +1184,24 @@
         `;
 
         // ─────────────────────────────────────────────────────────────
-        // Frustum Culling + Octree LOD + Radix Depth Sorting
+        // Zero-Allocation Frustum Culling + Radix Depth Sorting
         // ─────────────────────────────────────────────────────────────
+        const visibleGatherContext = { buffer: null, count: 0 };
+
         function updateDepthSort() {
             if (numGaussians === 0 || !rawPositions || !splatMesh || !octreeRoot) return;
 
+            camera.updateMatrixWorld(true);
             const eye = camera.position;
             const distMoved = Math.hypot(eye.x - lastSortedEye[0], eye.y - lastSortedEye[1], eye.z - lastSortedEye[2]);
             const angleDiff = Math.abs(cameraYaw - lastSortedYaw) + Math.abs(cameraPitch - lastSortedPitch);
+            const now = performance.now();
 
-            // Skip sorting if stationary
-            if (distMoved < 0.02 && angleDiff < 0.25 && lastSortedYaw !== -999) {
+            if (lastSortedYaw !== -999 && (now - lastSortAt < MIN_SORT_INTERVAL_MS || (distMoved < 0.03 && angleDiff < 0.4))) {
                 return;
             }
 
+            lastSortAt = now;
             lastSortedEye = [eye.x, eye.y, eye.z];
             lastSortedYaw = cameraYaw;
             lastSortedPitch = cameraPitch;
@@ -1127,10 +1210,11 @@
             projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
             frustum.setFromProjectionMatrix(projScreenMatrix);
 
-            // 2. Gather visible active splats from Spatial Octree
-            const visibleList = [];
-            octreeRoot.gatherLOD(eye.x, eye.y, eye.z, frustum, visibleList, lodEnabled);
-            activeCount = visibleList.length;
+            // 2. Gather visible active splats from Spatial Octree into pre-allocated buffer
+            visibleGatherContext.buffer = visibleIndicesBuffer;
+            visibleGatherContext.count = 0;
+            octreeRoot.gatherLOD(eye.x, eye.y, eye.z, frustum, visibleGatherContext, lodEnabled);
+            activeCount = visibleGatherContext.count;
 
             if (activeCount === 0) {
                 splatGeometry.instanceCount = 0;
@@ -1151,72 +1235,74 @@
             let maxD = -Infinity;
 
             for (let i = 0; i < activeCount; i++) {
-                const idx = visibleList[i];
+                const idx = visibleIndicesBuffer[i];
                 const posIdx = idx * 3;
                 const d = vzX * rawPositions[posIdx] + vzY * rawPositions[posIdx + 1] + vzZ * rawPositions[posIdx + 2];
-                sortDepths[i] = d;
+                sortDepthsBuffer[i] = d;
                 if (d < minD) minD = d;
                 if (d > maxD) maxD = d;
             }
 
             const range = Math.max(1e-4, maxD - minD);
-            const count = new Uint32Array(65536);
-            const keys = new Uint16Array(activeCount);
 
-            // 4. Furthest distance gets smallest key -> back-to-front rendering
+            // 4. Zero-allocation 16-bit Radix Sort: reuse pre-allocated typed arrays
+            sortCountsBuffer.fill(0);
             for (let i = 0; i < activeCount; i++) {
-                const k = Math.min(65535, Math.max(0, Math.floor(((maxD - sortDepths[i]) / range) * 65535)));
-                keys[i] = k;
-                count[k]++;
+                const k = Math.min(65535, Math.max(0, Math.floor(((maxD - sortDepthsBuffer[i]) / range) * 65535)));
+                sortKeysBuffer[i] = k;
+                sortCountsBuffer[k]++;
             }
 
-            const starts = new Uint32Array(65536);
             let sum = 0;
             for (let i = 0; i < 65536; i++) {
-                starts[i] = sum;
-                sum += count[i];
+                sortStartsBuffer[i] = sum;
+                sum += sortCountsBuffer[i];
             }
-
-            const sortedActive = new Int32Array(activeCount);
-            for (let i = 0; i < activeCount; i++) {
-                const k = keys[i];
-                sortedActive[starts[k]++] = visibleList[i];
-            }
-
-            // 5. Populate sorted bytes only for active instances
-            const srcU32 = new Uint32Array(rawSplatBytes.buffer);
-            const dstU32 = new Uint32Array(sortedSplatBytes.buffer);
 
             for (let i = 0; i < activeCount; i++) {
-                const srcOffset = sortedActive[i] * 8;
-                const dstOffset = i * 8;
-                dstU32[dstOffset]     = srcU32[srcOffset];
-                dstU32[dstOffset + 1] = srcU32[srcOffset + 1];
-                dstU32[dstOffset + 2] = srcU32[srcOffset + 2];
-                dstU32[dstOffset + 3] = srcU32[srcOffset + 3];
-                dstU32[dstOffset + 4] = srcU32[srcOffset + 4];
-                dstU32[dstOffset + 5] = srcU32[srcOffset + 5];
-                dstU32[dstOffset + 6] = srcU32[srcOffset + 6];
-                dstU32[dstOffset + 7] = srcU32[srcOffset + 7];
+                const k = sortKeysBuffer[i];
+                sortedActiveBuffer[sortStartsBuffer[k]++] = visibleIndicesBuffer[i];
             }
 
-            // 6. Update Three.js Instanced Attributes
+            // 5. Direct copy into Three.js Instanced Buffer Attributes (No object/method call overhead)
             const attrPos = splatGeometry.getAttribute("a_position");
             const attrScale = splatGeometry.getAttribute("a_scale");
             const attrColor = splatGeometry.getAttribute("a_color");
             const attrQuat = splatGeometry.getAttribute("a_quat");
 
-            const sortedF32 = new Float32Array(sortedSplatBytes.buffer);
-            const sortedU8 = new Uint8Array(sortedSplatBytes.buffer);
+            const posArr = attrPos.array;
+            const scaleArr = attrScale.array;
+            const colorArr = attrColor.array;
+            const quatArr = attrQuat.array;
+
+            const srcF32 = new Float32Array(rawSplatBytes.buffer);
+            const srcU8 = new Uint8Array(rawSplatBytes.buffer);
 
             for (let i = 0; i < activeCount; i++) {
-                const baseF32 = i * 8;
-                const baseU8 = i * 32;
+                const srcIdx = sortedActiveBuffer[i];
+                const srcF32Base = srcIdx * 8;
+                const srcU8Base = srcIdx * 32;
 
-                attrPos.setXYZ(i, sortedF32[baseF32], sortedF32[baseF32 + 1], sortedF32[baseF32 + 2]);
-                attrScale.setXYZ(i, sortedF32[baseF32 + 3], sortedF32[baseF32 + 4], sortedF32[baseF32 + 5]);
-                attrColor.setXYZW(i, sortedU8[baseU8 + 24], sortedU8[baseU8 + 25], sortedU8[baseU8 + 26], sortedU8[baseU8 + 27]);
-                attrQuat.setXYZW(i, sortedU8[baseU8 + 28], sortedU8[baseU8 + 29], sortedU8[baseU8 + 30], sortedU8[baseU8 + 31]);
+                const dstF32Base = i * 3;
+                const dstU8Base = i * 4;
+
+                posArr[dstF32Base + 0] = srcF32[srcF32Base + 0];
+                posArr[dstF32Base + 1] = srcF32[srcF32Base + 1];
+                posArr[dstF32Base + 2] = srcF32[srcF32Base + 2];
+
+                scaleArr[dstF32Base + 0] = srcF32[srcF32Base + 3];
+                scaleArr[dstF32Base + 1] = srcF32[srcF32Base + 4];
+                scaleArr[dstF32Base + 2] = srcF32[srcF32Base + 5];
+
+                colorArr[dstU8Base + 0] = srcU8[srcU8Base + 24];
+                colorArr[dstU8Base + 1] = srcU8[srcU8Base + 25];
+                colorArr[dstU8Base + 2] = srcU8[srcU8Base + 26];
+                colorArr[dstU8Base + 3] = srcU8[srcU8Base + 27];
+
+                quatArr[dstU8Base + 0] = srcU8[srcU8Base + 28];
+                quatArr[dstU8Base + 1] = srcU8[srcU8Base + 29];
+                quatArr[dstU8Base + 2] = srcU8[srcU8Base + 30];
+                quatArr[dstU8Base + 3] = srcU8[srcU8Base + 31];
             }
 
             attrPos.needsUpdate = true;
@@ -1233,14 +1319,19 @@
         // ─────────────────────────────────────────────────────────────
         async function loadSplatBuffer(buffer) {
             const bytesPerGaussian = 32;
+            if (!buffer || buffer.byteLength < bytesPerGaussian || buffer.byteLength % bytesPerGaussian !== 0) {
+                throw new Error("This file is not a valid 32-byte-per-splat .splat file.");
+            }
             numGaussians = Math.floor(buffer.byteLength / bytesPerGaussian);
 
             document.getElementById("splat-count").textContent = numGaussians.toLocaleString();
             document.getElementById("loader").style.opacity = "0";
 
             rawSplatBytes = new Uint8Array(buffer);
-            sortedSplatBytes = new Uint8Array(buffer.byteLength);
-            sortDepths = new Float32Array(numGaussians);
+            sortDepthsBuffer = new Float32Array(numGaussians);
+            sortKeysBuffer = new Uint16Array(numGaussians);
+            visibleIndicesBuffer = new Int32Array(numGaussians);
+            sortedActiveBuffer = new Int32Array(numGaussians);
 
             const srcF32 = new Float32Array(buffer);
             const srcU8 = new Uint8Array(buffer);
@@ -1255,8 +1346,8 @@
             // Build Spatial Collision Obstacle Grid for solid objects
             buildObstacleGrid(rawPositions, numGaussians);
 
-            // Build Spatial Octree for fast LOD and frustum culling
-            buildSpatialOctree(rawPositions, numGaussians);
+            // Build Spatial Octree for fast deterministic LOD and frustum culling
+            buildSpatialOctree(rawPositions, numGaussians, rawSplatBytes);
 
             // Create Three.js Instanced Buffer Geometry
             splatGeometry = new THREE.InstancedBufferGeometry();
@@ -1458,13 +1549,29 @@
         }
 
         async function loadSceneFile(url) {
+            const status = document.getElementById("load-status");
+            const loader = document.getElementById("loader");
+            status.className = "";
+            status.style.display = "none";
+            loader.style.display = "flex";
+            loader.style.opacity = "1";
             try {
                 const res = await fetch(url);
+                if (!res.ok) throw new Error(`Scene could not be loaded (HTTP ${res.status}).`);
                 const arrayBuffer = await res.arrayBuffer();
+                if (!arrayBuffer.byteLength) throw new Error("The scene file is empty.");
                 await loadSplatBuffer(arrayBuffer);
+                loader.style.display = "none";
+                status.textContent = `${numGaussians.toLocaleString()} splats loaded`;
+                status.className = "success";
+                status.style.display = "block";
+                window.setTimeout(() => { status.style.display = "none"; }, 2600);
             } catch (err) {
                 console.error("Failed to load scene from server:", err);
-                document.getElementById("loader").style.display = "none";
+                loader.style.display = "none";
+                status.textContent = err.message || "Could not load this scene.";
+                status.className = "error";
+                status.style.display = "block";
             }
         }
 
@@ -1670,7 +1777,37 @@
             link.click();
         };
 
-        // Drag & Drop
+        // Local .splat import and drag & drop
+        const filePicker = document.getElementById("file-picker");
+        document.getElementById("btn-import").onclick = () => filePicker.click();
+        filePicker.addEventListener("change", async e => {
+            const file = e.target.files[0];
+            if (file) await loadLocalSplat(file);
+            filePicker.value = "";
+        });
+        async function loadLocalSplat(file) {
+            const status = document.getElementById("load-status");
+            if (!file.name.toLowerCase().endsWith(".splat")) {
+                status.textContent = "Choose a .splat file. PLY files need conversion to .splat first.";
+                status.className = "error";
+                status.style.display = "block";
+                return;
+            }
+            try {
+                document.getElementById("loader").style.display = "flex";
+                document.getElementById("loader").style.opacity = "1";
+                await loadSplatBuffer(await file.arrayBuffer());
+                document.getElementById("loader").style.display = "none";
+                status.textContent = `${file.name} · ${numGaussians.toLocaleString()} splats`;
+                status.className = "success";
+                status.style.display = "block";
+            } catch (err) {
+                document.getElementById("loader").style.display = "none";
+                status.textContent = err.message || "Could not open this file.";
+                status.className = "error";
+                status.style.display = "block";
+            }
+        }
         const dropOverlay = document.getElementById("drop-overlay");
         window.addEventListener("dragover", e => { e.preventDefault(); dropOverlay.classList.add("dragover"); });
         dropOverlay.addEventListener("dragleave", () => dropOverlay.classList.remove("dragover"));
@@ -1678,10 +1815,7 @@
             e.preventDefault();
             dropOverlay.classList.remove("dragover");
             const file = e.dataTransfer.files[0];
-            if (file) {
-                const buf = await file.arrayBuffer();
-                await loadSplatBuffer(buf);
-            }
+            if (file) await loadLocalSplat(file);
         });
 
         // ─────────────────────────────────────────────────────────────

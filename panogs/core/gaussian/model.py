@@ -147,21 +147,23 @@ class GaussianModel:
 
     def get_scaling(self) -> np.ndarray:
         """Return (N, 3) strictly positive scaling standard deviations sigma = exp(s_log)."""
-        return np.exp(self._scaling_log)
+        safe_log = np.clip(self._scaling_log, -15.0, 5.0)
+        return np.exp(safe_log)
 
     def get_rotation_quats(self) -> np.ndarray:
         """Return (N, 4) normalized unit quaternions (qw, qx, qy, qz)."""
         norms = np.linalg.norm(self._rotation_quats, axis=-1, keepdims=True)
-        norms[norms == 0] = 1.0
-        return self._rotation_quats / norms
+        norms[np.isnan(norms) | (norms == 0)] = 1.0
+        return np.nan_to_num(self._rotation_quats / norms, nan=0.0)
 
     def get_rotation_matrices(self) -> np.ndarray:
         """Return (N, 3, 3) 3D orthonormal rotation matrices R."""
-        return quaternion_to_rotation_matrix(self._rotation_quats)
+        return quaternion_to_rotation_matrix(self.get_rotation_quats())
 
     def get_opacity(self) -> np.ndarray:
         """Return (N, 1) opacities alpha in (0.0, 1.0)."""
-        return sigmoid(self._opacity_logits)
+        safe_logits = np.clip(self._opacity_logits, -15.0, 15.0)
+        return sigmoid(safe_logits)
 
     def get_features_dc(self) -> np.ndarray:
         """Return (N, 3) zeroth-order spherical harmonics (SH0)."""

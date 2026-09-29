@@ -25,6 +25,8 @@ from panogs.reconstruction.pointcloud import PointCloud, reconstruct_from_image
 from panogs.reconstruction.processing import process_point_cloud
 from panogs.rendering.camera import create_orbit_camera
 from panogs.rendering.cpu.rasterizer import render_gaussians_cpu
+from panogs.benchmarks.benchmark import benchmark_scene
+from panogs.core.compression import compress_scene, prune_gaussians_by_importance
 from panogs.training.trainer import TrainingConfig, train_gaussians
 from panogs.apps.viewer import start_viewer_server
 
@@ -628,6 +630,77 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not automatically open the web browser",
     )
 
+    # ─────────────────────────────────────────────────────────────
+    # Subcommand: compress (LightGaussian Importance Pruning)
+    # ─────────────────────────────────────────────────────────────
+    compress_parser = subparsers.add_parser(
+        "compress",
+        help="Compress 3D Gaussian Splats using LightGaussian significance-based pruning",
+        description="Prune low-importance and floater 3D Gaussians (Fan et al., arXiv:2311.17245) to optimize file size and WebGL FPS.",
+    )
+    compress_parser.add_argument(
+        "input_path",
+        type=str,
+        help="Path to input 3DGS .ply or .splat file",
+    )
+    compress_parser.add_argument(
+        "-o", "--output",
+        type=str,
+        default="output/compressed_scene.ply",
+        help="Output path for compressed model (default: output/compressed_scene.ply)",
+    )
+    compress_parser.add_argument(
+        "--preset",
+        type=str,
+        default="balanced",
+        choices=["crisp", "balanced", "fast"],
+        help="Compression quality preset: 'crisp' (15% prune), 'balanced' (30% prune), 'fast' (50% prune) (default: balanced)",
+    )
+    compress_parser.add_argument(
+        "--ratio",
+        type=float,
+        default=None,
+        help="Custom prune ratio between 0.0 and 0.8 (overrides preset)",
+    )
+    compress_parser.add_argument(
+        "--splat",
+        action="store_true",
+        default=True,
+        help="Also export compressed WebGL .splat binary (default: True)",
+    )
+
+    # ─────────────────────────────────────────────────────────────
+    # Subcommand: benchmark
+    # ─────────────────────────────────────────────────────────────
+    bench_parser = subparsers.add_parser(
+        "benchmark",
+        help="Run standardized performance and quality benchmark on 3DGS scene",
+        description="Measure splat count, load time, median/p95 render frame time, and PSNR/SSIM quality.",
+    )
+    bench_parser.add_argument(
+        "model_path",
+        type=str,
+        help="Path to 3DGS .ply or .splat file to benchmark",
+    )
+    bench_parser.add_argument(
+        "--frames",
+        type=int,
+        default=10,
+        help="Number of camera trajectory frames (default: 10)",
+    )
+    bench_parser.add_argument(
+        "--width",
+        type=int,
+        default=400,
+        help="Benchmark rendering width in pixels (default: 400)",
+    )
+    bench_parser.add_argument(
+        "--height",
+        type=int,
+        default=300,
+        help="Benchmark rendering height in pixels (default: 300)",
+    )
+
     return parser
 
 
@@ -1088,6 +1161,87 @@ def handle_view(args: argparse.Namespace) -> int:
         return 1
 
 
+def handle_compress(args: argparse.Namespace) -> int:
+    """Handler for 'panogs compress' subcommand."""
+    logger = get_logger("cli.compress")
+    input_path = Path(args.input_path)
+    output_path = Path(args.output)
+
+    if not input_path.exists():
+        logger.error(f"Input file not found: {input_path}")
+        return 1
+
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        model = load_gaussian_ply(input_path)
+        num_orig = model.num_gaussians
+
+        if args.ratio is not None:
+            compressed_model, _ = prune_gaussians_by_importance(model, prune_ratio=args.ratio)
+        else:
+            preset_ratios = {"crisp": 0.15, "balanced": 0.30, "fast": 0.50}
+            prune_ratio = preset_ratios.get(args.preset.lower(), 0.30)
+            compressed_model, _ = prune_gaussians_by_importance(model, prune_ratio=prune_ratio)
+
+        save_gaussian_ply(output_path, compressed_model)
+        if args.splat:
+            save_gaussian_splat(output_path.with_suffix(".splat"), compressed_model)
+
+        num_final = compressed_model.num_gaussians
+        reduction = ((num_orig - num_final) / max(1, num_orig)) * 100
+
+        print("\nLightGaussian Scene Compression Complete:")
+        print(f"  Input:       {input_path} ({num_orig:,} splats)")
+        print(f"  Output:      {output_path} ({num_final:,} splats)")
+        print(f"  Reduction:   {reduction:.1f}% splats pruned")
+        print(f"  Preset:      {args.preset}\n")
+        return 0
+    except Exception as e:
+        logger.error(f"Compression failed: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
+def handle_benchmark(args: argparse.Namespace) -> int:
+    """Handler for 'panogs benchmark' subcommand."""
+    logger = get_logger("cli.benchmark")
+    model_path = Path(args.model_path)
+
+    if not model_path.exists():
+        logger.error(f"Model file not found: {model_path}")
+        return 1
+
+    try:
+        result = benchmark_scene(
+            model_path=model_path,
+            num_frames=args.frames,
+            width=args.width,
+            height=args.height,
+        )
+
+        print("\n" + "=" * 60)
+        print(f"  PanoGS Benchmark Report: {result.scene_name}")
+        print("=" * 60)
+        print(f"  Splat Count:        {result.splat_count:,}")
+        print(f"  File Size:          {result.file_size_mb:.2f} MB")
+        print(f"  Load Time:          {result.load_time_ms:.1f} ms")
+        print(f"  Median Frame Time:  {result.median_render_ms:.2f} ms")
+        print(f"  p95 Frame Time:     {result.p95_render_ms:.2f} ms")
+        print(f"  Estimated Speed:    {result.fps_estimate:.1f} FPS")
+        print(f"  Trajectory PSNR:    {result.psnr_db:.2f} dB")
+        print(f"  Trajectory SSIM:    {result.ssim_score:.4f}")
+        print("=" * 60 + "\n")
+        return 0
+    except Exception as e:
+        logger.error(f"Benchmark failed: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
 def main(args: Optional[List[str]] = None) -> int:
     """Main CLI entry point."""
     parser = build_parser()
@@ -1130,6 +1284,10 @@ def main(args: Optional[List[str]] = None) -> int:
         return handle_train(parsed_args)
     elif parsed_args.command == "view":
         return handle_view(parsed_args)
+    elif parsed_args.command == "compress":
+        return handle_compress(parsed_args)
+    elif parsed_args.command == "benchmark":
+        return handle_benchmark(parsed_args)
 
     logger.error(f"Unknown command: {parsed_args.command}")
     return 1
