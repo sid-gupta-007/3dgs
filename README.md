@@ -43,8 +43,8 @@ PanoGS is designed CPU-first and memory-conscious by default, ensuring full func
 This branch is set up for a **Gradio Space**. Push it to the Space repository to
 deploy the app. The first reconstruction downloads the Depth Anything V2 Metric
 Indoor Small model, so its first run takes longer while the model is cached.
-The pipeline currently runs on CPU; selecting GPU hardware does not speed up this
-version yet.
+The depth-estimation stage uses Hugging Face ZeroGPU. Point-cloud processing and
+Gaussian export continue on the Space's CPU.
 
 By default, uploads, generated scenes, and downloaded model files live on the
 Space's temporary disk/cache and may be removed when it restarts. To retain them,

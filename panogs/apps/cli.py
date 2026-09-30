@@ -172,6 +172,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Depth model ('cubemap_depth_anything', 'cubemap_midas', 'depth_anything_v2', 'midas_small', 'synthetic_room') (default: cubemap_depth_anything)",
     )
     recon_parser.add_argument(
+        "--device",
+        type=str,
+        choices=["cpu", "cuda"],
+        default="cpu",
+        help="Depth inference device ('cpu' or 'cuda'; default: cpu)",
+    )
+    recon_parser.add_argument(
         "--camera",
         type=str,
         default="spherical",
@@ -829,7 +836,7 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
     output_path = Path(args.output)
 
     try:
-        estimator = get_depth_estimator(args.model)
+        estimator = get_depth_estimator(args.model, device=getattr(args, "device", "cpu"))
         
         num_layers = getattr(args, "layers", 1)
         use_ldi = getattr(args, "ldi", False) or num_layers > 1

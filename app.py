@@ -10,10 +10,9 @@ import sys
 import threading
 import uuid
 from pathlib import Path
-from typing import Iterator
 
 import gradio as gr
-import uvicorn
+import spaces
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,15 +35,14 @@ def editor_link(job_id: str) -> str:
     )
 
 
-def reconstruct(panorama_path: str | None) -> Iterator[tuple[str, str, str]]:
+@spaces.GPU(duration=300)
+def reconstruct(panorama_path: str | None, progress=gr.Progress()) -> tuple[str, str, str]:
     if not panorama_path:
-        yield "Choose an HDR panorama first.", "", ""
-        return
+        return "Choose an HDR panorama first.", "", ""
 
     source = Path(panorama_path)
     if source.suffix.lower() not in {".hdr", ".exr"}:
-        yield "Please upload an .hdr or .exr panorama.", "", ""
-        return
+        return "Please upload an .hdr or .exr panorama.", "", ""
 
     job_id = uuid.uuid4().hex
     pointcloud_path = OUTPUT_DIR / f"panorama_{job_id}_reconstruction.ply"
@@ -52,10 +50,11 @@ def reconstruct(panorama_path: str | None) -> Iterator[tuple[str, str, str]]:
     command = [
         sys.executable, "-m", "panogs.apps.cli", "reconstruct", str(source),
         "--output", str(pointcloud_path), "--model", "cubemap_depth_anything",
+        "--device", "cuda",
         "--shape", "hybrid", "--sharpness", "0.75", "--scale-factor", "0.8", "--opacity", "0.85",
     ]
 
-    yield "Loading the depth model and starting reconstruction…", "", ""
+    progress(0, desc="Loading the depth model and starting reconstruction…")
     try:
         process = subprocess.Popen(
             command,
@@ -71,17 +70,17 @@ def reconstruct(panorama_path: str | None) -> Iterator[tuple[str, str, str]]:
         assert process.stdout is not None
         for line in process.stdout:
             log_tail = (log_tail + line)[-6000:]
-            yield "PanoGS is estimating depth and building the Gaussian scene…", log_tail, ""
+            progress(None, desc=line.strip()[:100] or "Reconstructing panorama…")
         return_code = process.wait()
         if return_code != 0 or not gaussian_path.is_file():
-            yield "Reconstruction failed. See the run log below.", log_tail, ""
-            return
+            return "Reconstruction failed. See the run log below.", log_tail, ""
 
         with RESULTS_LOCK:
             RESULTS[job_id] = gaussian_path
-        yield "Reconstruction complete.", log_tail, editor_link(job_id)
+        progress(1, desc="Reconstruction complete")
+        return "Reconstruction complete.", log_tail, editor_link(job_id)
     except Exception as exc:
-        yield f"Could not run reconstruction: {exc}", "", ""
+        return f"Could not run reconstruction: {exc}", "", ""
 
 
 def open_existing_ply(ply_path: str | None) -> tuple[str, str]:
@@ -98,7 +97,7 @@ def open_existing_ply(ply_path: str | None) -> tuple[str, str]:
     return "PLY ready to open.", editor_link(job_id)
 
 
-with gr.Blocks(title="PanoGS Studio", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="PanoGS Studio") as demo:
     gr.Markdown(
         "# 🌐 PanoGS Studio\n"
         "Upload a 360° HDR panorama to build a Gaussian scene, then open it in the bundled SuperSplat editor."
@@ -144,7 +143,3 @@ def get_generated_file(filename: str) -> FileResponse:
 
 app.mount("/supersplat", StaticFiles(directory=VIEWER_DIR / "supersplat_dist", html=True), name="supersplat")
 app = gr.mount_gradio_app(app, demo, path="/")
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "7860")))
