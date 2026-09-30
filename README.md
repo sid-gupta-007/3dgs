@@ -1,6 +1,20 @@
+---
+title: PanoGS Studio
+emoji: 🌐
+colorFrom: purple
+colorTo: blue
+sdk: gradio
+pinned: false
+app_file: app.py
+---
+
 # PanoGS
 
 > **A local-first, unified image/panorama/video → 3D Gaussian Splatting reconstruction engine with an interactive viewer.**
+
+This repository can also run as a Hugging Face Gradio Space. Its `app.py` hosts
+PanoGS Studio, runs panorama reconstruction on the Space, and serves the bundled
+SuperSplat editor. You do not need Docker installed on your own computer.
 
 ---
 
@@ -21,6 +35,20 @@ PanoGS is designed CPU-first and memory-conscious by default, ensuring full func
 ---
 
 ## 🚀 Quickstart & Installation
+
+### Deploy the proof of concept to Hugging Face
+
+This branch is set up for a **Gradio Space**. Push it to the Space repository to
+deploy the app. The first reconstruction downloads the Depth Anything V2 Metric
+Indoor Small model, so its first run takes longer while the model is cached.
+The pipeline currently runs on CPU; selecting GPU hardware does not speed up this
+version yet.
+
+By default, uploads, generated scenes, and downloaded model files live on the
+Space's temporary disk/cache and may be removed when it restarts. To retain them,
+enable persistent storage in the Space settings and set `PANOGS_OUTPUT_DIR` to a
+path on the attached volume (for example `/data/panogs-output`) and `HF_HOME` to
+a cache path there (for example `/data/.cache/huggingface`).
 
 ### 1. Set up Virtual Environment
 ```bash

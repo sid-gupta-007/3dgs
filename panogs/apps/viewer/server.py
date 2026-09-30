@@ -7,6 +7,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import mimetypes
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -612,6 +613,7 @@ def start_viewer_server(
     port: int = 8080,
     open_browser: bool = True,
     block: bool = True,
+    host: str = "127.0.0.1",
 ) -> ThreadingHTTPServer:
     """
     Start the interactive WebGL 3DGS viewer HTTP server.
@@ -619,6 +621,7 @@ def start_viewer_server(
     Args:
         model_path: Path to .splat, .hdrsplat, or Gaussian .ply file.
         port: Port to serve on (default: 8080).
+        host: Interface to bind to (default: 127.0.0.1; use 0.0.0.0 for hosted apps).
         open_browser: Whether to open default web browser automatically.
         block: Whether to block calling thread with serve_forever().
 
@@ -643,7 +646,9 @@ def start_viewer_server(
     SplatViewerHandler.default_scene_name = Path(model_path).stem.replace("_", " ").title() if model_path else "Upload a panorama"
     SplatViewerHandler.default_scene_gaussians = num_gaussians
     SplatViewerHandler.default_scene_size_mb = round(len(splat_data) / (1024 * 1024), 1)
-    SplatViewerHandler.output_dir = (Path.cwd() / "output").resolve()
+    output_dir = Path(os.environ.get("PANOGS_OUTPUT_DIR", str(Path.cwd() / "output"))).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    SplatViewerHandler.output_dir = output_dir.resolve()
     SplatViewerHandler.jobs = {}
     SplatViewerHandler.active_reconstruction = None
     SplatViewerHandler.uploaded_plys = {}
@@ -652,10 +657,11 @@ def start_viewer_server(
     if not SplatViewerHandler.supersplat_dist.joinpath("index.html").is_file():
         raise FileNotFoundError("Bundled SuperSplat build is missing from panogs/apps/viewer/supersplat_dist")
 
-    server_address = ("127.0.0.1", port)
+    server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, SplatViewerHandler)
 
-    url = f"http://127.0.0.1:{port}"
+    display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    url = f"http://{display_host}:{port}"
     page_mode = "lightweight reconstruction menu" if SplatViewerHandler.studio_mode else f"{num_gaussians:,} Gaussians loaded"
     logger.info(f"Serving PanoGS at {url} ({page_mode})")
 
