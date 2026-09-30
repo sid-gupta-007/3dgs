@@ -7,6 +7,6 @@ scipy>=1.9
 opencv-python-headless>=4.8
 torch>=2.2
 torchvision>=0.17
-transformers>=4.45,<5
+transformers==5.17.0
 gradio==6.29.0
 uvicorn>=0.30
