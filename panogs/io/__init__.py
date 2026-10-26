@@ -4,7 +4,10 @@ from panogs.io.depth import (
     save_depth_result,
 )
 from panogs.io.gaussian_ply import (
+    ensure_supersplat_ply,
+    is_supersplat_compatible_ply,
     load_gaussian_ply,
+    repair_panoramic_gaussians,
     save_gaussian_hdr_splat,
     save_gaussian_ply,
     save_gaussian_splat,
@@ -16,6 +19,7 @@ from panogs.io.images import (
     load_image_as_numpy,
     load_hdr_radiance,
     save_image,
+    tonemap_hdr_to_srgb,
 )
 from panogs.io.ply import (
     read_point_cloud_ply,
@@ -39,4 +43,8 @@ __all__ = [
     "load_gaussian_ply",
     "save_gaussian_splat",
     "save_gaussian_hdr_splat",
+    "ensure_supersplat_ply",
+    "is_supersplat_compatible_ply",
+    "repair_panoramic_gaussians",
+    "tonemap_hdr_to_srgb",
 ]

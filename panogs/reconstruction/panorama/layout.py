@@ -106,6 +106,71 @@ def compute_cuboid_room_geometry(
     return d_box, normals, min_idx
 
 
+def regularize_panoramic_depth(
+    depth_map: np.ndarray,
+    rays: np.ndarray,
+) -> np.ndarray:
+    """
+    Eliminate monocular depth tearing on lattice partitions, window muntins, hanging cords,
+    and glowing ceiling fixtures while preserving all real 3D furniture volumes:
+    1. Thin foreground blade/cord suppression (MORPH_CLOSE): prevents narrow (<3.5% width)
+       see-through lattice bars, hanging cords, and ceiling LED strips from jutting meters
+       into mid-air and shredding when viewed off-axis.
+    2. Narrow pane/aperture sealing (MORPH_OPEN): prevents narrow see-through panes
+       from spiking backward between frame bars.
+    3. Shock edge snapping: snaps transition ramps cleanly to foreground or background depth
+       so zero pixels float in mid-air as shredded ribbons.
+    """
+    H, W = depth_map.shape
+    d = np.maximum(depth_map.astype(np.float32), 0.1)
+    ry = rays[:, :, 1]
+
+    # 1. Suppress narrow 1-2px floating cord/muntin spikes without flattening real walls or pillars
+    k_thin = 5
+    pad = k_thin
+    d_pad = np.pad(d, ((0, 0), (pad, pad)), mode="wrap")
+    kernel_thin = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_thin, k_thin))
+    d_closed = cv2.morphologyEx(d_pad, cv2.MORPH_CLOSE, kernel_thin)[:, pad : pad + W]
+    is_thin_blade = ((d_closed - d) / np.maximum(d, 0.1)) > 0.22
+    d = np.where(is_thin_blade, d_closed, d)
+
+    # 2. Suppress narrow 1-2px depth pinholes
+    d_opened = cv2.morphologyEx(d, cv2.MORPH_OPEN, kernel_thin)
+    pane_spike = (d - d_opened) > np.maximum(0.45, d_opened * 0.22)
+    d = np.where(pane_spike, d_opened, d)
+
+    # 3. Snap 1-2px transition ramps at sharp silhouette boundaries
+    d = sharpen_depth_edges(d, rel_jump=0.16, abs_jump=0.28, radius=2)
+    return d.astype(np.float32)
+
+
+def sharpen_depth_edges(
+    depth_map: np.ndarray,
+    rel_jump: float = 0.14,
+    abs_jump: float = 0.22,
+    radius: int = 4,
+) -> np.ndarray:
+    """
+    Shock-filter depth transition ramps at object boundaries so bilinear/neural
+    transition slopes snap cleanly to either the foreground object or background wall
+    instead of stretching across mid-air as floating ribbons.
+    """
+    d = np.maximum(depth_map.astype(np.float32), 0.05)
+    k = 2 * radius + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    d_min = cv2.erode(d, kernel)
+    d_max = cv2.dilate(d, kernel)
+
+    span = d_max - d_min
+    is_ramp = ((span / np.maximum(d_min, 0.05)) > rel_jump) & (span > abs_jump)
+    if not np.any(is_ramp):
+        return d
+
+    pos = (d - d_min) / np.maximum(span, 1e-4)
+    snapped = np.where(pos < 0.48, d_min, d_max)
+    return np.where(is_ramp, snapped, d).astype(np.float32)
+
+
 def detect_depth_edges(
     depth_map: np.ndarray,
     rel_threshold: float = 0.08,
@@ -114,32 +179,37 @@ def detect_depth_edges(
     """
     Detect depth discontinuity edges where relative depth change > threshold.
     
-    These edges represent object boundary transitions (e.g., edge of a table/couch
-    where depth jumps to the floor/wall behind it). Flying transition pixels
-    along these edges must be pruned to avoid stretching rubber-sheet artifacts.
+    Checks both 1-pixel and 2-pixel neighborhood jumps so multi-pixel transition
+    slopes at object silhouettes are caught completely and never form floating ribbons.
     """
     d = np.maximum(depth_map, 0.01)
-    
-    # Horizontal depth jumps
-    d_left = np.roll(d, 1, axis=1)
-    d_right = np.roll(d, -1, axis=1)
-    rel_h = np.maximum(
-        np.abs(d - d_left) / np.minimum(d, d_left),
-        np.abs(d - d_right) / np.minimum(d, d_right),
-    )
-    abs_h = np.maximum(np.abs(d - d_left), np.abs(d - d_right))
-    
-    # Vertical depth jumps
-    d_up = np.roll(d, 1, axis=0)
-    d_down = np.roll(d, -1, axis=0)
-    rel_v = np.maximum(
-        np.abs(d - d_up) / np.minimum(d, d_up),
-        np.abs(d - d_down) / np.minimum(d, d_down),
-    )
-    abs_v = np.maximum(np.abs(d - d_up), np.abs(d - d_down))
-    
-    edge = ((rel_h > rel_threshold) & (abs_h > abs_threshold)) | ((rel_v > rel_threshold) & (abs_v > abs_threshold))
-    
+    edge = np.zeros(d.shape, dtype=bool)
+
+    for step in (1, 2):
+        thresh_r = rel_threshold * (1.0 if step == 1 else 1.25)
+        thresh_a = abs_threshold * (1.0 if step == 1 else 1.25)
+
+        d_left = np.roll(d, step, axis=1)
+        d_right = np.roll(d, -step, axis=1)
+        rel_h = np.maximum(
+            np.abs(d - d_left) / np.minimum(d, d_left),
+            np.abs(d - d_right) / np.minimum(d, d_right),
+        )
+        abs_h = np.maximum(np.abs(d - d_left), np.abs(d - d_right))
+
+        d_up = np.roll(d, step, axis=0)
+        d_down = np.roll(d, -step, axis=0)
+        # Do not wrap vertical top-to-bottom poles across axis=0
+        d_up[:step, :] = d[:step, :]
+        d_down[-step:, :] = d[-step:, :]
+        rel_v = np.maximum(
+            np.abs(d - d_up) / np.minimum(d, d_up),
+            np.abs(d - d_down) / np.minimum(d, d_down),
+        )
+        abs_v = np.maximum(np.abs(d - d_up), np.abs(d - d_down))
+
+        edge |= ((rel_h > thresh_r) & (abs_h > thresh_a)) | ((rel_v > thresh_r) & (abs_v > thresh_a))
+
     # Dilate by 1 pixel to capture the full transition zone
     dilated = (
         edge
@@ -198,7 +268,7 @@ def reconstruct_layout_panorama(
     room_depth: float = 4.5,
     room_width: float = 3.6,
     relief_weight: float = 1.0,
-    solid_shell: bool = False,
+    solid_shell: bool = True,
     jitter: bool = False,
     max_resolution: Optional[int] = None,
     output_ply: Optional[Union[str, Path]] = None,
@@ -268,12 +338,17 @@ def reconstruct_layout_panorama(
         norm_inv = (inv - inv_min) / (inv_max - inv_min)
         d_final = (0.6 + 8.0 * norm_inv).astype(np.float32)
 
-    # Apply RGB-Guided Joint Bilateral Filtering to eliminate depth wobbles while keeping crisp edges
-    logger.info("Applying RGB-guided joint bilateral smoothing to eliminate depth noise...")
-    d_final = joint_bilateral_filter(d_final, img_rgb, spatial_radius=2, sigma_spatial=2.0, sigma_depth=0.12, sigma_color=0.15)
-
     # 3. Generate equirectangular unit rays (with anti-moire jittering if enabled)
     rays = equirectangular_rays(H, W, jitter=jitter)
+
+    # Regularize ceiling fixtures, lattice partitions, and transition ramps before bilateral filtering
+    logger.info("Regularizing panoramic depth structure (ceiling fixtures, lattice panes, and silhouette ramps)...")
+    d_final = regularize_panoramic_depth(d_final, rays)
+
+    # Apply RGB-Guided Joint Bilateral Filtering to eliminate depth wobbles while keeping crisp edges
+    logger.info("Applying RGB-guided joint bilateral smoothing to eliminate depth noise...")
+    d_final = joint_bilateral_filter(d_final, img_rgb, spatial_radius=2, sigma_spatial=1.8, sigma_depth=0.10, sigma_color=0.12)
+    d_final = sharpen_depth_edges(d_final, rel_jump=0.16, abs_jump=0.25, radius=2)
 
     # 4. Compute Manhattan cuboid room geometry for architectural planar bounds & solid shell
     d_box, normals_box, plane_type = compute_cuboid_room_geometry(
@@ -298,15 +373,16 @@ def reconstruct_layout_panorama(
     logger.info(f"Found {edge_count:,} depth-edge silhouette pixels ({100.0 * edge_count / (H*W):.1f}% of image)")
 
     logger.info("Segmenting foreground furniture & inpainting occluded background...")
-    fg_mask = segment_foreground_objects(d_final, rel_depth_threshold=0.15, min_size_pixels=100)
+    fg_mask = segment_foreground_objects(d_final, rel_depth_threshold=0.18, min_size_pixels=120, background_depth=None)
     fg_count = np.count_nonzero(fg_mask)
     logger.info(f"Segmented {fg_count:,} foreground furniture pixels ({100.0 * fg_count / (H * W):.1f}%).")
 
-    if solid_shell and fg_count > 0:
-        bg_rgb = inpaint_background_texture(img_rgb, fg_mask, inpaint_radius=9, method="telea")
-        # Inpaint continuous metric depth behind foreground objects using surrounding wall/floor context
+    inpaint_mask = (fg_mask > 0).astype(np.uint8) * 255
+    if solid_shell and np.any(inpaint_mask > 0):
+        bg_rgb = inpaint_background_texture(img_rgb, inpaint_mask, inpaint_radius=7, method="telea")
+        # Inpaint continuous metric depth behind foreground objects using scene's own depth envelope
         from panogs.reconstruction.inpainting import inpaint_background_depth
-        d_background = inpaint_background_depth(d_final, fg_mask, cuboid_envelope=d_box, smooth_sigma=3.0)
+        d_background = inpaint_background_depth(d_final, inpaint_mask, cuboid_envelope=None, smooth_sigma=2.5)
     else:
         bg_rgb = img_rgb.copy()
         d_background = d_final.copy()
@@ -328,10 +404,29 @@ def reconstruct_layout_panorama(
     facing = np.sum(normals_grad * rays, axis=-1, keepdims=True)
     normals_grad[facing[:, :, 0] > 0] *= -1.0
 
-    # Gentle normal refinement ONLY for un-occluded pure ceiling and floor (never touching 3D objects)
+    # Gentle normal & planar height refinement ONLY for un-occluded pure ceiling and floor (never touching 3D objects)
     ry = rays[:, :, 1]
     is_pure_ceil = (ry > 0.70) & (normals_grad[:, :, 1] < -0.80) & (fg_mask == 0)
     is_pure_floor = (ry < -0.70) & (normals_grad[:, :, 1] > 0.80) & (fg_mask == 0)
+
+    if relief_weight < 1.0:
+        w_rel = float(np.clip(relief_weight, 0.0, 1.0))
+        bg_blend = fg_mask == 0
+        d_blended = np.where(bg_blend, w_rel * d_final + (1.0 - w_rel) * d_box, d_final).astype(np.float32)
+        P = d_blended[:, :, np.newaxis] * rays
+    else:
+        if np.any(is_pure_floor):
+            median_floor_y = float(np.median(P[is_pure_floor, 1]))
+            floor_target_d = np.clip(-median_floor_y / np.maximum(-ry, 1e-4), 0.3, 40.0)
+            floor_alpha = np.clip((-ry - 0.70) / 0.25, 0.0, 1.0) * 0.35
+            d_floor_reg = (1.0 - floor_alpha) * d_final + floor_alpha * floor_target_d
+            P[is_pure_floor] = (d_floor_reg[is_pure_floor, np.newaxis] * rays[is_pure_floor]).astype(np.float32)
+        if np.any(is_pure_ceil):
+            median_ceil_y = float(np.median(P[is_pure_ceil, 1]))
+            ceil_target_d = np.clip(median_ceil_y / np.maximum(ry, 1e-4), 0.3, 40.0)
+            ceil_alpha = np.clip((ry - 0.70) / 0.25, 0.0, 1.0) * 0.35
+            d_ceil_reg = (1.0 - ceil_alpha) * d_final + ceil_alpha * ceil_target_d
+            P[is_pure_ceil] = (d_ceil_reg[is_pure_ceil, np.newaxis] * rays[is_pure_ceil]).astype(np.float32)
 
     normals_snapped = normals_grad.copy()
     normals_snapped[is_pure_ceil] = [0.0, -1.0, 0.0]
@@ -349,8 +444,10 @@ def reconstruct_layout_panorama(
     n_final_len[n_final_len == 0] = 1.0
     normals_final = (normals_final / n_final_len).astype(np.float32)
 
-    # 8. Filter out flying transition slope pixels so furniture doesn't smear into walls
-    flying_mask = detect_depth_edges(d_final, rel_threshold=0.08, abs_threshold=0.18)
+    # 8. Filter out extreme flying transition slope pixels so furniture doesn't smear into walls
+    flying_mask = detect_depth_edges(d_final, rel_threshold=0.12, abs_threshold=0.25)
+    # Never prune nadir/zenith poles (|ry| > 0.88) to prevent black floor/ceiling holes
+    flying_mask &= (np.abs(ry) <= 0.88)
     keep_primary = ~flying_mask.reshape(-1)
 
     flat_P = P.reshape(-1, 3).astype(np.float32)[keep_primary]
@@ -369,7 +466,7 @@ def reconstruct_layout_panorama(
     infilled_count = 0
     if solid_shell and fg_count > 0:
         logger.info("Synthesizing solid backing surfaces behind occluded foreground furniture...")
-        occluded_mask = (fg_mask > 0) & (d_background > d_final + 0.15) & (d_background < 25.0)
+        occluded_mask = (fg_mask > 0) & (d_background > d_final + 0.20) & (d_background < 25.0)
 
         if np.any(occluded_mask):
             shell_rays = rays[occluded_mask]
@@ -377,12 +474,8 @@ def reconstruct_layout_panorama(
             shell_pts = (shell_rays * shell_d).astype(np.float32)
             shell_cols = bg_rgb[occluded_mask].astype(np.uint8)
 
-            # Assign surface normal based on region (floor vs wall)
-            shell_ry = shell_rays[:, 1]
-            shell_norms = np.zeros((len(shell_pts), 3), dtype=np.float32)
-            is_flr = shell_ry < -0.15
-            shell_norms[is_flr] = [0.0, 1.0, 0.0]
-            shell_norms[~is_flr] = -shell_rays[~is_flr]  # Camera facing for wall backing
+            # Use analytical room box normals for background walls/floors/ceilings so surfels lie flat on the wall
+            shell_norms = normals_box[occluded_mask].astype(np.float32)
             sn_len = np.linalg.norm(shell_norms, axis=-1, keepdims=True)
             sn_len[sn_len == 0] = 1.0
             shell_norms = (shell_norms / sn_len).astype(np.float32)

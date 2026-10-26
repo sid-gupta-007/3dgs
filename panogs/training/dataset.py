@@ -26,19 +26,24 @@ class TrainingView:
 def sample_perspective_from_equirectangular(
     pano_rgb: np.ndarray,
     camera: Camera,
+    *,
+    convert_to_linear: bool = True,
 ) -> np.ndarray:
     """
     Render/sample a perspective view from an equirectangular panorama image.
 
     Args:
-        pano_rgb: (H_pano, W_pano, 3) float32 linear RGB or uint8 sRGB in [0, 255].
+        pano_rgb: (H_pano, W_pano, 3) float32 RGB or uint8 sRGB in [0, 255].
         camera: Perspective Camera defining the viewport.
+        convert_to_linear: If True and pano_rgb is uint8, converts sRGB to linear RGB.
+            Set False when sampling display-referred sRGB crops for neural depth models.
 
     Returns:
-        np.ndarray: (H, W, 3) float32 sampled perspective linear RGB image.
+        np.ndarray: (H, W, 3) float32 sampled perspective RGB image.
     """
     if pano_rgb.dtype == np.uint8:
-        pano = srgb_to_linear(pano_rgb.astype(np.float32) / 255.0)
+        norm = pano_rgb.astype(np.float32) / 255.0
+        pano = srgb_to_linear(norm) if convert_to_linear else norm
     else:
         pano = pano_rgb.astype(np.float32)
 

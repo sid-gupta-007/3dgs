@@ -14,46 +14,52 @@ if TYPE_CHECKING:
 
 def rotation_matrix_to_quaternion(R: np.ndarray) -> np.ndarray:
     """
-    Convert (N, 3, 3) rotation matrices to (N, 4) unit quaternions (qw, qx, qy, qz).
+    Convert (N, 3, 3) rotation matrices to (N, 4) unit quaternions (qw, qx, qy, qz)
+    using vectorized branchless Shepperd's algorithm.
     """
     N = R.shape[0]
     quats = np.zeros((N, 4), dtype=np.float32)
 
-    tr = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]
+    r00, r01, r02 = R[:, 0, 0], R[:, 0, 1], R[:, 0, 2]
+    r10, r11, r12 = R[:, 1, 0], R[:, 1, 1], R[:, 1, 2]
+    r20, r21, r22 = R[:, 2, 0], R[:, 2, 1], R[:, 2, 2]
+    tr = r00 + r11 + r22
 
-    # Standard Shepperd's algorithm or vectorized branchless quaternion conversion
-    for i in range(N):
-        r = R[i]
-        t = tr[i]
-        if t > 0.0:
-            S = np.sqrt(t + 1.0) * 2.0
-            qw = 0.25 * S
-            qx = (r[2, 1] - r[1, 2]) / S
-            qy = (r[0, 2] - r[2, 0]) / S
-            qz = (r[1, 0] - r[0, 1]) / S
-        elif (r[0, 0] > r[1, 1]) and (r[0, 0] > r[2, 2]):
-            S = np.sqrt(1.0 + r[0, 0] - r[1, 1] - r[2, 2]) * 2.0
-            qw = (r[2, 1] - r[1, 2]) / S
-            qx = 0.25 * S
-            qy = (r[0, 1] + r[1, 0]) / S
-            qz = (r[0, 2] + r[2, 0]) / S
-        elif r[1, 1] > r[2, 2]:
-            S = np.sqrt(1.0 + r[1, 1] - r[0, 0] - r[2, 2]) * 2.0
-            qw = (r[0, 2] - r[2, 0]) / S
-            qx = (r[0, 1] + r[1, 0]) / S
-            qy = 0.25 * S
-            qz = (r[1, 2] + r[2, 1]) / S
-        else:
-            S = np.sqrt(1.0 + r[2, 2] - r[0, 0] - r[1, 1]) * 2.0
-            qw = (r[1, 0] - r[0, 1]) / S
-            qx = (r[0, 2] + r[2, 0]) / S
-            qy = (r[1, 2] + r[2, 1]) / S
-            qz = 0.25 * S
-        quats[i] = [qw, qx, qy, qz]
+    m0 = tr > 0.0
+    if np.any(m0):
+        S = np.sqrt(np.maximum(tr[m0] + 1.0, 1e-12)) * 2.0
+        quats[m0, 0] = 0.25 * S
+        quats[m0, 1] = (r21[m0] - r12[m0]) / S
+        quats[m0, 2] = (r02[m0] - r20[m0]) / S
+        quats[m0, 3] = (r10[m0] - r01[m0]) / S
+
+    m1 = (~m0) & (r00 > r11) & (r00 > r22)
+    if np.any(m1):
+        S = np.sqrt(np.maximum(1.0 + r00[m1] - r11[m1] - r22[m1], 1e-12)) * 2.0
+        quats[m1, 0] = (r21[m1] - r12[m1]) / S
+        quats[m1, 1] = 0.25 * S
+        quats[m1, 2] = (r01[m1] + r10[m1]) / S
+        quats[m1, 3] = (r02[m1] + r20[m1]) / S
+
+    m2 = (~m0) & (~m1) & (r11 > r22)
+    if np.any(m2):
+        S = np.sqrt(np.maximum(1.0 + r11[m2] - r00[m2] - r22[m2], 1e-12)) * 2.0
+        quats[m2, 0] = (r02[m2] - r20[m2]) / S
+        quats[m2, 1] = (r01[m2] + r10[m2]) / S
+        quats[m2, 2] = 0.25 * S
+        quats[m2, 3] = (r12[m2] + r21[m2]) / S
+
+    m3 = (~m0) & (~m1) & (~m2)
+    if np.any(m3):
+        S = np.sqrt(np.maximum(1.0 + r22[m3] - r00[m3] - r11[m3], 1e-12)) * 2.0
+        quats[m3, 0] = (r10[m3] - r01[m3]) / S
+        quats[m3, 1] = (r02[m3] + r20[m3]) / S
+        quats[m3, 2] = (r12[m3] + r21[m3]) / S
+        quats[m3, 3] = 0.25 * S
 
     norms = np.linalg.norm(quats, axis=-1, keepdims=True)
     norms[norms == 0] = 1.0
-    return quats / norms
+    return (quats / norms).astype(np.float32)
 
 
 def estimate_dominant_light_direction(point_cloud: PointCloud) -> np.ndarray:
@@ -119,7 +125,8 @@ def initialize_from_pointcloud(
         neighbor_indices = neighbor_indices[:, np.newaxis]
 
     if distances.shape[1] > 1:
-        mean_dists = np.mean(distances[:, 1:], axis=1)
+        k_near = min(4, distances.shape[1])
+        mean_dists = np.mean(distances[:, 1:k_near], axis=1)
         base_scales = mean_dists * scale_multiplier
     else:
         base_scales = np.full(N, 0.05, dtype=np.float32)
@@ -131,16 +138,26 @@ def initialize_from_pointcloud(
     median_scale = float(np.median(base_scales))
     outlier_cap = median_scale * 3.0
     base_scales = np.minimum(base_scales, outlier_cap)
-
     adaptive_scales = np.clip(base_scales, min_scale, max_scale).astype(np.float32)
 
     # For structured panorama point clouds: cap scale by ray angular footprint
+    # and enforce a polar floor only near nadir/zenith poles (|dy| > 0.85)
+    # where spherical ring convergence shrinks horizontal neighbor spacing.
     if point_cloud.metadata and "total_pixels" in point_cloud.metadata:
-        point_depths = np.linalg.norm(xyz, axis=-1)
+        point_depths = np.maximum(np.linalg.norm(xyz, axis=-1), 1e-4)
         total_pixels = point_cloud.metadata["total_pixels"]
-        angular_pixel = (2.0 * np.pi) / max(1, int(np.sqrt(total_pixels) * 2))
+        est_height = max(1.0, np.sqrt(total_pixels / 2.0))
+        angular_pixel = np.pi / est_height
         max_angular_scale = point_depths * angular_pixel * 1.30 * scale_multiplier
-        adaptive_scales = np.minimum(adaptive_scales, np.maximum(max_angular_scale, min_scale).astype(np.float32))
+        adaptive_scales = np.minimum(
+            adaptive_scales,
+            np.maximum(max_angular_scale, min_scale).astype(np.float32),
+        )
+        abs_dy = np.abs(xyz[:, 1]) / point_depths
+        pole_mask = abs_dy > 0.85
+        if np.any(pole_mask):
+            pole_floor = point_depths[pole_mask] * angular_pixel * 0.98 * scale_multiplier
+            adaptive_scales[pole_mask] = np.maximum(adaptive_scales[pole_mask], pole_floor.astype(np.float32))
 
     logger.info(
         f"Scale stats: median={median_scale:.5f}m, outlier_cap={outlier_cap:.5f}m, "
@@ -262,20 +279,20 @@ def initialize_from_pointcloud(
                 100.0 * np.mean(planar <= 0.05),
                 100.0 * np.mean(is_edge),
             )
-            sphere_factor = 0.88
-            tangent_factor = sphere_factor + (1.28 - sphere_factor) * planar
-            thickness_factor = sphere_factor + (0.06 - sphere_factor) * planar
+            sphere_factor = 0.82 - 0.14 * sharpness
+            tangent_factor = sphere_factor + (1.22 - sphere_factor) * planar
+            min_thickness = 0.07 - 0.03 * sharpness
+            thickness_factor = sphere_factor + (min_thickness - sphere_factor) * planar
             sx = adaptive_scales * tangent_factor
             sy = adaptive_scales * tangent_factor
             sz = np.clip(adaptive_scales * thickness_factor, min_scale, max_scale)
 
-            # Strong depth boundaries get a narrow profile so splats do not
-            # bridge foreground and background. This signal is present for
-            # layout reconstruction; other modes remain geometry-adaptive.
+            # Strong depth boundaries get a compact, symmetric tangent profile
+            # so splats do not bridge foreground/background or spike toward light sources.
             if np.any(is_edge):
-                sx[is_edge] = adaptive_scales[is_edge] * 1.40
-                sy[is_edge] = np.clip(adaptive_scales[is_edge] * 0.50, min_scale, max_scale)
-                sz[is_edge] = np.clip(adaptive_scales[is_edge] * 0.05, min_scale, max_scale)
+                sx[is_edge] = np.clip(adaptive_scales[is_edge] * 0.85, min_scale, max_scale)
+                sy[is_edge] = np.clip(adaptive_scales[is_edge] * 0.85, min_scale, max_scale)
+                sz[is_edge] = np.clip(adaptive_scales[is_edge] * 0.10, min_scale, max_scale)
 
         scales = np.stack([sx, sy, sz], axis=-1).astype(np.float32)
     else:

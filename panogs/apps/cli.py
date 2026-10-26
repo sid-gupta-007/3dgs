@@ -235,14 +235,13 @@ def build_parser() -> argparse.ArgumentParser:
     recon_parser.add_argument(
         "--solid-shell",
         action="store_true",
-        default=False,
-        help="Add an inpainted background shell behind segmented foreground objects (default: off)",
+        default=True,
+        help="Add an inpainted background shell behind segmented foreground objects (default: True)",
     )
     recon_parser.add_argument(
         "--no-solid-shell",
         dest="solid_shell",
         action="store_false",
-        default=False,
         help="Disable solid room shell backing",
     )
     recon_parser.add_argument(
@@ -333,8 +332,8 @@ def build_parser() -> argparse.ArgumentParser:
     pano_parser.add_argument("--ceiling-height", type=float, default=1.8, help="Ceiling height in meters (default: 1.8)")
     pano_parser.add_argument("--room-depth", type=float, default=4.5, help="Room depth in meters (default: 4.5)")
     pano_parser.add_argument("--room-width", type=float, default=4.0, help="Room width in meters (default: 4.0)")
-    pano_parser.add_argument("--solid-shell", action="store_true", default=False, help="Add an inpainted background shell (default: off)")
-    pano_parser.add_argument("--no-solid-shell", dest="solid_shell", action="store_false", default=False, help="Disable the inpainted background shell")
+    pano_parser.add_argument("--solid-shell", action="store_true", default=True, help="Add an inpainted background shell (default: True)")
+    pano_parser.add_argument("--no-solid-shell", dest="solid_shell", action="store_false", help="Disable the inpainted background shell")
     pano_parser.add_argument("--jitter", action="store_true", default=False, help="Anti-moire ray jittering (default: False)")
     pano_parser.add_argument("--no-jitter", dest="jitter", action="store_false", help="Disable anti-moire ray jittering")
     pano_parser.add_argument("--synth-views", type=int, default=0, help="Novel perspective viewpoints to synthesize for occlusions (default: 0, set e.g. 4 for multi-view rig)")
@@ -876,7 +875,7 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
                 h_ceiling=args.ceiling_height,
                 room_depth=args.room_depth,
                 room_width=args.room_width,
-                solid_shell=getattr(args, "solid_shell", False),
+                solid_shell=getattr(args, "solid_shell", True),
                 jitter=getattr(args, "jitter", False),
                 max_resolution=args.max_res,
                 output_ply=output_path,
@@ -935,11 +934,11 @@ def handle_reconstruct(args: argparse.Namespace) -> int:
                 splat_shape=shape,
                 sharpness=sharpness,
             )
-            save_gaussian_ply(gauss_path, model)
+            save_gaussian_ply(gauss_path, model, supersplat_compat=True)
             save_gaussian_splat(splat_path, model)
             hdr_splat_path = gauss_path.with_suffix(".hdrsplat")
             save_gaussian_hdr_splat(hdr_splat_path, model)
-            print(f"  3DGS PLY:        {gauss_path} ({model.num_gaussians:,} Gaussians)")
+            print(f"  3DGS PLY:        {gauss_path} ({model.num_gaussians:,} Gaussians, SuperSplat-ready)")
             print(f"  WebGL Splat:     {splat_path}")
             print(f"  HDR WebGL Splat: {hdr_splat_path} (linear radiance)\n")
 
@@ -988,7 +987,7 @@ def handle_video(args: argparse.Namespace) -> int:
             shape = getattr(args, "shape", "hybrid")
             logger.info(f"Initializing 3D Gaussians (shape: {shape}) from video point cloud...")
             model = initialize_from_pointcloud(pc, splat_shape=shape)
-            save_gaussian_ply(gauss_path, model)
+            save_gaussian_ply(gauss_path, model, supersplat_compat=True)
             save_gaussian_splat(splat_path, model)
             save_gaussian_hdr_splat(gauss_path.with_suffix(".hdrsplat"), model)
             print(f"  3DGS PLY:        {gauss_path} ({model.num_gaussians:,} Gaussians)")
@@ -1068,7 +1067,7 @@ def handle_init_gaussians(args: argparse.Namespace) -> int:
             sharpness=getattr(args, "sharpness", 0.7),
         )
 
-        save_gaussian_ply(output_path, model)
+        save_gaussian_ply(output_path, model, supersplat_compat=True)
 
         if args.splat:
             splat_path = output_path.with_suffix(".splat")
@@ -1196,20 +1195,6 @@ def handle_view(args: argparse.Namespace) -> int:
         logger.error(f"Scene model file not found: {model_path}")
         return 1
 
-
-def handle_studio(args: argparse.Namespace) -> int:
-    """Launch the upload-first PanoGS reconstruction studio."""
-    try:
-        start_viewer_server(model_path=None, port=args.port, open_browser=not args.no_browser, block=True)
-        return 0
-    except Exception as exc:
-        logger = get_logger("cli.studio")
-        logger.error(f"PanoGS Studio failed: {exc}")
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
-        return 1
-
     try:
         start_viewer_server(
             model_path=model_path,
@@ -1220,6 +1205,20 @@ def handle_studio(args: argparse.Namespace) -> int:
         return 0
     except Exception as e:
         logger.error(f"Viewer failed: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
+def handle_studio(args: argparse.Namespace) -> int:
+    """Launch the upload-first PanoGS reconstruction studio."""
+    try:
+        start_viewer_server(model_path=None, port=args.port, open_browser=not args.no_browser, block=True)
+        return 0
+    except Exception as exc:
+        logger = get_logger("cli.studio")
+        logger.error(f"PanoGS Studio failed: {exc}")
         if args.verbose:
             import traceback
             traceback.print_exc()

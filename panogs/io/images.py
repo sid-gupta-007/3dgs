@@ -25,6 +25,34 @@ def linear_to_srgb(rgb: np.ndarray) -> np.ndarray:
     return np.where(values <= 0.0031308, values * 12.92, 1.055 * np.power(values, 1.0 / 2.4) - 0.055)
 
 
+def tonemap_hdr_to_srgb(hdr_rgb: np.ndarray) -> np.ndarray:
+    """Convert linear HDR radiance to display-referred sRGB in [0, 1] with highlight roll-off.
+
+    When all values are already within [0, 1], applies standard linear-to-sRGB encoding.
+    When HDR values exceed 1.0, calibrates log-average exposure and applies extended
+    Reinhard tone mapping so bright windows and light fixtures retain detail instead
+    of clipping to flat white.
+    """
+    clean = np.nan_to_num(hdr_rgb, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    clean = np.maximum(clean, 0.0)
+    peak = float(np.max(clean)) if clean.size > 0 else 0.0
+    if peak <= 1.0:
+        return np.clip(linear_to_srgb(clean), 0.0, 1.0)
+
+    luma = 0.2126 * clean[..., 0] + 0.7152 * clean[..., 1] + 0.0722 * clean[..., 2]
+    valid_luma = luma[luma > 1e-4]
+    if valid_luma.size > 0:
+        log_avg = float(np.exp(np.mean(np.log(valid_luma))))
+        exposure = float(np.clip(0.22 / max(log_avg, 1e-4), 0.15, 6.0))
+    else:
+        exposure = 1.0
+
+    exposed = clean * exposure
+    l_white = max(float(np.max(exposed)) * 1.15, 2.0)
+    mapped = (exposed * (1.0 + exposed / (l_white * l_white))) / (1.0 + exposed)
+    return np.clip(linear_to_srgb(np.clip(mapped, 0.0, 1.0)), 0.0, 1.0)
+
+
 @dataclass
 class ImageMetadata:
     """Metadata describing an image file and its memory footprint."""
@@ -176,10 +204,9 @@ def load_image(
         else:
             hdr_rgb = cv2.cvtColor(hdr_bgr, cv2.COLOR_BGR2RGB)
 
-        # Convert linear HDR radiance to display-referred sRGB without tone mapping
-        # or automatic exposure. Values above 1.0 are clipped for this 8-bit path.
-        linear_rgb = np.clip(hdr_rgb, 0.0, 1.0)
-        srgb = linear_to_srgb(linear_rgb)
+        # Convert linear HDR radiance to display-referred sRGB with highlight compression
+        # so neural depth estimators preserve geometry across bright windows and lamps.
+        srgb = tonemap_hdr_to_srgb(hdr_rgb)
         uint8_rgb = (srgb * 255.0).round().astype(np.uint8)
         img = Image.fromarray(uint8_rgb)
     else:

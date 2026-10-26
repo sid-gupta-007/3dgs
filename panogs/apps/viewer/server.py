@@ -20,7 +20,12 @@ from typing import Optional, Union
 import webbrowser
 
 from panogs.core.logging import get_logger
-from panogs.io.gaussian_ply import load_gaussian_ply, save_gaussian_hdr_splat, save_gaussian_splat
+from panogs.io.gaussian_ply import (
+    ensure_supersplat_ply,
+    load_gaussian_ply,
+    save_gaussian_hdr_splat,
+    save_gaussian_splat,
+)
 
 
 class SplatViewerHandler(SimpleHTTPRequestHandler):
@@ -215,6 +220,10 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
                 with ply_path.open("rb") as source:
                     if source.read(3) != b"ply":
                         raise ValueError("The selected file does not have a valid PLY header.")
+                try:
+                    ensure_supersplat_ply(ply_path, ply_path)
+                except Exception:
+                    pass
             except (OSError, ValueError) as exc:
                 ply_path.unlink(missing_ok=True)
                 self._send_json(400, {"error": str(exc)})
@@ -223,13 +232,13 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
             with self.jobs_lock:
                 self.uploaded_plys[upload_id] = ply_path
             editor_url = f"/supersplat/?content={urllib.parse.quote(f'/api/ply/{upload_id}.ply', safe='/')}"
-            self._send_json(200, {"editor_url": editor_url})
+            self._send_json(200, {"editor_url": editor_url, "ply_url": f"/api/ply/{upload_id}.ply"})
             return
 
         filename = urllib.parse.parse_qs(parsed.query).get("filename", [""])[0]
         suffix = Path(filename).suffix.lower()
-        if suffix not in {".hdr", ".exr"}:
-            self._send_json(400, {"error": "Choose an .hdr or .exr panorama."})
+        if suffix not in {".hdr", ".exr", ".jpg", ".jpeg", ".png"}:
+            self._send_json(400, {"error": "Choose an .hdr, .exr, .jpg, or .png panorama."})
             return
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
@@ -283,7 +292,8 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
         command = [
             sys.executable, "-m", "panogs.apps.cli", "reconstruct", str(source_path),
             "--output", str(output_path), "--model", "cubemap_depth_anything",
-            "--shape", "hybrid", "--sharpness", "0.75", "--scale-factor", "0.8", "--opacity", "0.85",
+            "--no-solid-shell", "--shape", "hybrid", "--sharpness", "0.70",
+            "--scale-factor", "0.85", "--opacity", "0.94",
         ]
         with cls.jobs_lock:
             cls.jobs[job_id].update(status="running", message="Estimating depth and building the Gaussian PLY.")
@@ -301,11 +311,20 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
             return_code = process.wait()
             gaussian_ply = output_path.with_name(f"{output_path.stem}_gaussians.ply")
             if return_code == 0 and gaussian_ply.is_file():
+                try:
+                    ensure_supersplat_ply(gaussian_ply, gaussian_ply)
+                except Exception:
+                    pass
+                hdr_splat = gaussian_ply.with_suffix(".hdrsplat")
+                splat_file = output_path.with_suffix(".splat")
+                viewer_scene = hdr_splat.name if hdr_splat.is_file() else (splat_file.name if splat_file.is_file() else gaussian_ply.name)
                 with cls.jobs_lock:
                     cls.jobs[job_id].update(
                         status="complete",
                         message="Reconstruction complete. The Gaussian PLY is ready to open in SuperSplat.",
                         gaussian_ply=str(gaussian_ply),
+                        viewer_url=f"/viewer/?scene={urllib.parse.quote(viewer_scene)}",
+                        download_url=f"/api/reconstruction/{job_id}/gaussian.ply",
                     )
             else:
                 with cls.jobs_lock:
@@ -531,6 +550,8 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
             if "scene" in query_params:
                 scene_name = query_params["scene"][0]
                 candidates = [
+                    self.output_dir / scene_name,
+                    self.output_dir / f"{scene_name}.splat",
                     Path("output") / scene_name,
                     Path("output") / f"{scene_name}.splat",
                     Path(scene_name),

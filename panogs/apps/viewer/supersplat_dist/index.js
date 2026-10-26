@@ -179299,8 +179299,8 @@ class ProjectedSplatRenderer {
     // the map is sized to the target in blocks; a change in size drops the
     // previous frame's map, whose blocks would no longer line up
     updateDepthMap(width, height) {
-        const blocksX = Math.ceil(width / OCCLUSION_BLOCK);
-        const blocksY = Math.ceil(height / OCCLUSION_BLOCK);
+        const blocksX = Math.max(1, Math.ceil(width / OCCLUSION_BLOCK));
+        const blocksY = Math.max(1, Math.ceil(height / OCCLUSION_BLOCK));
         if (!this.depthMax || this.occlusionBlocks.x !== blocksX || this.occlusionBlocks.y !== blocksY) {
             this.depthMax?.destroy();
             this.depthMax = new StorageBuffer(this.device, blocksX * blocksY * 4, BUFFERUSAGE_COPY_SRC);
@@ -180228,8 +180228,8 @@ class Scene {
                     if (entry.devicePixelContentBoxSize) {
                         // on non-safari browsers, we are given the pixel-perfect canvas size
                         this.canvasResize = {
-                            width: entry.devicePixelContentBoxSize[0].inlineSize,
-                            height: entry.devicePixelContentBoxSize[0].blockSize
+                            width: Math.max(2, entry.devicePixelContentBoxSize[0].inlineSize),
+                            height: Math.max(2, entry.devicePixelContentBoxSize[0].blockSize)
                         };
                     }
                     else if (entry.contentBoxSize.length > 0) {
@@ -180237,8 +180237,8 @@ class Scene {
                         // and hope the browser performs the same calculation.
                         const pixelRatio = window.devicePixelRatio;
                         this.canvasResize = {
-                            width: Math.ceil(entry.contentBoxSize[0].inlineSize * pixelRatio),
-                            height: Math.ceil(entry.contentBoxSize[0].blockSize * pixelRatio)
+                            width: Math.max(2, Math.ceil(entry.contentBoxSize[0].inlineSize * pixelRatio)),
+                            height: Math.max(2, Math.ceil(entry.contentBoxSize[0].blockSize * pixelRatio))
                         };
                     }
                 }
@@ -180440,8 +180440,8 @@ class Scene {
     onUpdate(deltaTime) {
         this.cpuFrameStart = performance.now();
         if (this.canvasResize) {
-            this.canvas.width = this.canvasResize.width;
-            this.canvas.height = this.canvasResize.height;
+            this.canvas.width = Math.max(2, this.canvasResize.width);
+            this.canvas.height = Math.max(2, this.canvasResize.height);
             this.canvasResize = null;
         }
         // allow elements to update
@@ -180531,8 +180531,8 @@ class Scene {
     onPreRender() {
         // update render target size (config.camera.pixelScale divides the
         // backbuffer size; the final blit upscales the result to fill the screen)
-        this.targetSize.width = Math.ceil(this.app.graphicsDevice.width / this.config.camera.pixelScale);
-        this.targetSize.height = Math.ceil(this.app.graphicsDevice.height / this.config.camera.pixelScale);
+        this.targetSize.width = Math.max(2, Math.ceil(this.app.graphicsDevice.width / this.config.camera.pixelScale));
+        this.targetSize.height = Math.max(2, Math.ceil(this.app.graphicsDevice.height / this.config.camera.pixelScale));
         this.forEachElement(e => e.onPreRender());
         this.projectedSplatRenderer.render();
         this.events.fire('prerender', this.camera.displayTransform);

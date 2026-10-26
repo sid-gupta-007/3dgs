@@ -121,6 +121,84 @@ def _align_relative_faces(
     return aligned
 
 
+def _align_metric_faces(
+    radial_maps: List[np.ndarray], cameras: List[Camera], face_size: int
+) -> List[np.ndarray]:
+    """Align metric radial distance predictions across overlapping cubemap faces.
+
+    Even metric monocular depth estimators can predict slightly different global
+    scales on isolated ceiling/floor faces versus horizontal wall faces. We solve
+    for per-face multiplicative scale corrections in log-space across the 100-deg
+    overlap zones while anchoring the horizontal ring geometric mean to 1.0 so
+    true metric scale in meters is preserved.
+    """
+    count = len(radial_maps)
+    if count <= 1:
+        return radial_maps
+
+    focal = cameras[0].fx
+    cx, cy = cameras[0].cx, cameras[0].cy
+    axis = np.arange(face_size, dtype=np.float32)
+    xx, yy = np.meshgrid(axis, axis, indexing="xy")
+    rays_cam = np.stack(((xx - cx) / focal, (yy - cy) / focal, np.ones_like(xx)), axis=-1)
+    rays_cam /= np.linalg.norm(rays_cam, axis=-1, keepdims=True)
+    rays_world = [rays_cam.reshape(-1, 3) @ camera.R for camera in cameras]
+
+    rows = []
+    rhs = []
+    for i in range(count):
+        for j in range(i + 1, count):
+            rays_i = rays_world[i]
+            rays_j_cam = rays_i @ cameras[j].R.T
+            z = rays_j_cam[:, 2]
+            valid = z > 1e-5
+            u = cameras[j].fx * rays_j_cam[:, 0] / np.maximum(z, 1e-5) + cameras[j].cx
+            v = cameras[j].fy * rays_j_cam[:, 1] / np.maximum(z, 1e-5) + cameras[j].cy
+            valid &= (u >= 2) & (u < face_size - 2) & (v >= 2) & (v < face_size - 2)
+            ids = np.flatnonzero(valid)
+            if len(ids) < 128:
+                continue
+            if len(ids) > 8000:
+                ids = ids[np.linspace(0, len(ids) - 1, 8000).astype(np.int32)]
+            ri = radial_maps[i].reshape(-1)[ids]
+            rj = _bilinear_sample(radial_maps[j], u[ids], v[ids])
+            good = np.isfinite(ri) & np.isfinite(rj) & (ri > 0.2) & (rj > 0.2)
+            if np.count_nonzero(good) < 128:
+                continue
+            log_ratio = np.log(rj[good] / ri[good])
+            # Trim outlier depth jumps at occlusion boundaries
+            lo, hi = np.percentile(log_ratio, (15, 85))
+            inliers = (log_ratio >= lo) & (log_ratio <= hi)
+            if np.count_nonzero(inliers) < 64:
+                continue
+            med_log_ratio = float(np.median(log_ratio[inliers]))
+            # Want: s_j * r_j ~= s_i * r_i  =>  log(s_i) - log(s_j) = log(r_j / r_i)
+            row = np.zeros(count, dtype=np.float64)
+            row[i] = 1.0
+            row[j] = -1.0
+            # Weight horizontal-to-horizontal links higher than pole links
+            w = 2.0 if (i < 4 and j < 4) else 1.0
+            rows.append(row * w)
+            rhs.append(med_log_ratio * w)
+
+    if not rows:
+        return radial_maps
+
+    # Anchor horizontal views (indices 0..min(4, count)) mean log-scale to 0.0
+    horiz_count = min(4, count)
+    anchor = np.zeros(count, dtype=np.float64)
+    anchor[:horiz_count] = 4.0 / horiz_count
+    rows.append(anchor)
+    rhs.append(0.0)
+
+    A = np.vstack(rows)
+    b = np.array(rhs, dtype=np.float64)
+    log_scales, *_ = np.linalg.lstsq(A, b, rcond=None)
+    scales = np.clip(np.exp(log_scales), 0.72, 1.38).astype(np.float32)
+
+    return [(rmap * s).astype(np.float32) for rmap, s in zip(radial_maps, scales)]
+
+
 class CubemapDepthEstimator(DepthEstimator):
     """
     Estimates undistorted 3D scene depth by decomposing the 360 panorama into
@@ -192,6 +270,10 @@ class CubemapDepthEstimator(DepthEstimator):
         face_cameras: List[Camera] = []
         face_disparities: List[np.ndarray] = []
 
+        # Precompute planar-Z to radial distance conversion grid for perspective faces
+        axis_f = np.arange(F, dtype=np.float32)
+        uu_f, vv_f = np.meshgrid(axis_f, axis_f, indexing="xy")
+
         for name, target, up in face_configs:
             cam = create_lookat_camera(
                 eye=(0.0, 0.0, 0.0),
@@ -199,27 +281,33 @@ class CubemapDepthEstimator(DepthEstimator):
                 up=up,
                 width=F,
                 height=F,
-                # A small overlap lets neighboring perspective estimates be
-                # calibrated against common content and blended at cube seams.
+                # A 100-deg FOV gives 10-deg overlap across neighboring cube faces
+                # for multi-view scale calibration and smooth seam feathering.
                 fov=100.0,
             )
-            # Sample perspective RGB face
-            face_rgb = sample_perspective_from_equirectangular(pano_rgb, cam)
-            face_pil = Image.fromarray((face_rgb * 255.0).astype(np.uint8))
+            # Sample perspective RGB face in display sRGB space for neural depth
+            face_rgb = sample_perspective_from_equirectangular(pano_rgb, cam, convert_to_linear=False)
+            face_pil = Image.fromarray((np.clip(face_rgb, 0.0, 1.0) * 255.0).round().astype(np.uint8))
 
             # Run depth estimation on perspective face (straight walls & flat planes)
             res = self.underlying_estimator.estimate(face_pil)
-            disp = res.depth_map
+            disp = res.depth_map.astype(np.float32)
 
             if self._is_metric:
-                # Preserve metric depth values (meters) — no normalization
+                # Convert perspective planar Z-depth to radial Euclidean ray distance
+                ray_norm = np.sqrt(
+                    ((uu_f - cam.cx) / cam.fx) ** 2 + ((vv_f - cam.cy) / cam.fy) ** 2 + 1.0
+                ).astype(np.float32)
                 face_cameras.append(cam)
-                face_disparities.append(disp)
+                face_disparities.append(disp * ray_norm)
             else:
                 face_cameras.append(cam)
-                face_disparities.append(disp.astype(np.float32))
+                face_disparities.append(disp)
 
-        if not self._is_metric:
+        if self._is_metric:
+            self.logger.info("Aligning metric radial distances across overlapping cubemap views...")
+            face_disparities = _align_metric_faces(face_disparities, face_cameras, F)
+        else:
             self.logger.info("Aligning relative depth scales across overlapping panorama views...")
             face_disparities = _align_relative_faces(face_disparities, face_cameras, F)
 
@@ -232,7 +320,7 @@ class CubemapDepthEstimator(DepthEstimator):
         flat_rays = rays.reshape(-1, 3)
         fused = np.zeros(len(flat_rays), dtype=np.float32)
         chunk_size = 262144
-        feather = max(4.0, F * 0.12)
+        feather = max(6.0, F * 0.20)
         for start in range(0, len(flat_rays), chunk_size):
             end = min(start + chunk_size, len(flat_rays))
             ray_chunk = flat_rays[start:end]
@@ -250,10 +338,9 @@ class CubemapDepthEstimator(DepthEstimator):
                 uv, vv = u[valid], v[valid]
                 edge = np.minimum.reduce((uv, vv, F - 1.0 - uv, F - 1.0 - vv))
                 t = np.clip(edge / feather, 0.0, 1.0)
-                weight = (t * t * (3.0 - 2.0 * t) + 0.02).astype(np.float32)
+                # Zero-boundary Hermite window eliminates hard seam steps at face borders
+                weight = (t * t * (3.0 - 2.0 * t) + 1e-5).astype(np.float32)
                 sampled = _bilinear_sample(depth_face, uv, vv)
-                if self._is_metric:
-                    sampled = sampled / safe_z[valid]
                 chunk_sum[valid] += sampled * weight
                 chunk_weight[valid] += weight
             fused[start:end] = chunk_sum / np.maximum(chunk_weight, 1e-6)

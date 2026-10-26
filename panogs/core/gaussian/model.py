@@ -173,13 +173,9 @@ class GaussianModel:
         return sh0_to_rgb(self._features_dc)
 
     def get_rgb_uint8(self) -> np.ndarray:
-        """Return (N, 3) uint8 RGB colors in [0, 255]."""
-        linear_rgb = np.clip(self.get_rgb(), 0.0, 1.0)
-        srgb = np.where(
-            linear_rgb <= 0.0031308,
-            12.92 * linear_rgb,
-            1.055 * np.power(linear_rgb, 1.0 / 2.4) - 0.055,
-        )
+        """Return (N, 3) uint8 RGB colors in [0, 255] with HDR highlight roll-off."""
+        from panogs.io.images import tonemap_hdr_to_srgb
+        srgb = tonemap_hdr_to_srgb(self.get_rgb())
         return (srgb * 255.0).round().astype(np.uint8)
 
     # ─────────────────────────────────────────────────────────────

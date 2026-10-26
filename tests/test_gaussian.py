@@ -132,3 +132,94 @@ def test_save_gaussian_splat(tmp_path: Path):
     save_gaussian_splat(out_splat, model)
     assert out_splat.exists()
     assert out_splat.stat().st_size == 32  # 32 bytes per splat
+
+
+def test_vectorized_rotation_matrix_to_quaternion():
+    from panogs.core.gaussian.initialization import rotation_matrix_to_quaternion
+
+    angles = np.linspace(0.0, 2.0 * np.pi, 16, dtype=np.float32)
+    mats = []
+    for a in angles:
+        c, s = np.cos(a), np.sin(a)
+        rx = np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float32)
+        ry = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float32)
+        rz = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float32)
+        mats.extend([rx, ry, rz, rx @ ry @ rz])
+    R_in = np.stack(mats, axis=0)
+    quats = rotation_matrix_to_quaternion(R_in)
+    R_out = quaternion_to_rotation_matrix(quats)
+    assert np.allclose(R_in, R_out, atol=1e-5)
+
+
+def test_supersplat_ply_export_and_ensure(tmp_path: Path):
+    from panogs.io.gaussian_ply import ensure_supersplat_ply, is_supersplat_compatible_ply
+    from panogs.io.ply import write_point_cloud_ply
+
+    xyz = np.array([[1.5, 2.5, -3.0], [-1.0, -0.5, 4.0]], dtype=np.float32)
+    scales = np.array([[0.1, 0.2, 0.05], [0.15, 0.1, 0.2]], dtype=np.float32)
+    quats = np.array([[1.0, 0.0, 0.0, 0.0], [0.70710678, 0.70710678, 0.0, 0.0]], dtype=np.float32)
+    hdr_colors = np.array([[12.0, 4.0, 1.0], [0.2, 0.5, 0.8]], dtype=np.float32)
+    opacities = np.array([0.9, 0.8], dtype=np.float32)
+
+    model = GaussianModel.from_raw(xyz, scales, quats, hdr_colors, opacities)
+    compat_ply = tmp_path / "compat.ply"
+    save_gaussian_ply(compat_ply, model, supersplat_compat=True)
+    assert is_supersplat_compatible_ply(compat_ply)
+
+    loaded = load_gaussian_ply(compat_ply)
+    assert np.allclose(loaded.get_xyz(), xyz, atol=1e-5)
+    assert np.allclose(loaded.get_covariance_3d(), model.get_covariance_3d(), atol=1e-5)
+
+    # Also test upgrading a raw point cloud PLY to SuperSplat 3DGS PLY
+    pc_ply = tmp_path / "raw_pc.ply"
+    pts = np.random.uniform(-2.0, 2.0, (16, 3)).astype(np.float32)
+    cols = np.random.randint(20, 240, (16, 3), dtype=np.uint8)
+    write_point_cloud_ply(pc_ply, pts, cols, binary=True)
+    assert not is_supersplat_compatible_ply(pc_ply)
+
+    upgraded_ply = tmp_path / "upgraded.ply"
+    ensure_supersplat_ply(pc_ply, upgraded_ply)
+    assert is_supersplat_compatible_ply(upgraded_ply)
+    upgraded_model = load_gaussian_ply(upgraded_ply)
+    assert upgraded_model.num_gaussians == 16
+
+
+def test_tonemap_hdr_to_srgb():
+    from panogs.io.images import tonemap_hdr_to_srgb
+
+    hdr = np.zeros((16, 16, 3), dtype=np.float32) + 0.18
+    hdr[0, 0] = [5.0, 5.0, 5.0]
+    hdr[0, 1] = [50.0, 50.0, 50.0]
+    srgb = tonemap_hdr_to_srgb(hdr)
+    assert srgb.shape == (16, 16, 3)
+    assert np.all(srgb >= 0.0) and np.all(srgb <= 1.0)
+    # Brighter HDR peak should remain strictly brighter than lower peak instead of both clipping identically
+    assert srgb[0, 1, 0] > srgb[0, 0, 0] > srgb[8, 8, 0]
+
+
+def test_repair_panoramic_gaussians_heals_voids_and_nadir():
+    from panogs.core.camera.spherical import equirectangular_rays
+    from panogs.io.gaussian_ply import repair_panoramic_gaussians
+
+    H, W = 40, 80  # 3,200 points (>= 2048 threshold)
+    rays = equirectangular_rays(H, W)
+    d = np.full((H, W), 4.0, dtype=np.float32)
+    # Wide foreground partition at 1.2m with no background points behind it
+    d[12:28, 25:45] = 1.2
+    # Floating mid-air ribbon at boundary (2.5m between 1.2m and 4.0m)
+    d[12:28, 24] = 2.5
+
+    pts = (rays * d[:, :, None]).reshape(-1, 3).astype(np.float32)
+    N = len(pts)
+    scales = np.full((N, 3), 0.05, dtype=np.float32)
+    quats = np.zeros((N, 4), dtype=np.float32)
+    quats[:, 0] = 1.0
+    colors = np.full((N, 3), 0.6, dtype=np.float32)
+    opacities = np.full(N, 0.85, dtype=np.float32)
+
+    model = GaussianModel.from_raw(pts, scales, quats, colors, opacities)
+    repaired = repair_panoramic_gaussians(model)
+
+    # Should have synthesized solid background splats + nadir floor cap
+    assert repaired.num_gaussians > N
+    assert np.all(repaired.get_opacity() >= 0.919)

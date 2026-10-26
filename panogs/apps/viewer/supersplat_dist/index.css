@@ -4437,6 +4437,8 @@ body {
 
 #canvas-container {
   width: 100%;
+  min-width: 2px;
+  min-height: 2px;
   display: flex;
   border: 0;
   padding: 0;

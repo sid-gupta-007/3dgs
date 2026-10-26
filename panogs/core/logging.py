@@ -27,6 +27,22 @@ class Formatter(logging.Formatter):
         return formatter.format(record)
 
 
+class _DynamicStdoutHandler(logging.StreamHandler):
+    """StreamHandler that always resolves the active sys.stdout (safe across pytest capsys)."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        stream = sys.stdout
+        if stream is None or getattr(stream, "closed", False):
+            stream = sys.__stdout__
+        if stream is None or getattr(stream, "closed", False):
+            return
+        self.stream = stream
+        try:
+            super().emit(record)
+        except ValueError:
+            pass
+
+
 def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> None:
     """Configure root logger for PanoGS."""
     numeric_level = getattr(logging, level.upper(), logging.INFO)
@@ -36,7 +52,7 @@ def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> None:
     # Avoid duplicate handlers if setup_logging is called multiple times
     root_logger.handlers.clear()
 
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = _DynamicStdoutHandler()
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(Formatter())
     root_logger.addHandler(console_handler)
