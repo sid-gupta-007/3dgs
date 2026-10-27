@@ -20,7 +20,7 @@ The PanoGS viewer provides real-time, hardware-accelerated 60 FPS WebGL scene in
   - **Opacity Cutoff**: Filter low-alpha or transparent floaters on the fly.
   - **Environment Themes**: Pitch Dark, Studio Gray, Clean White, Deep Space.
   - **Snapshot Capture**: One-click high-resolution PNG snapshot download.
-  - **Drag-and-Drop Loader**: Drop any external `.splat` or `.ply` file onto the window to switch scenes instantly.
+  - **Local Scene Loading**: Open or drop a `.splat` file to switch scenes instantly. Convert 3DGS `.ply` files with `panogs view model.ply` before loading them into the browser viewer.
 
 ---
 

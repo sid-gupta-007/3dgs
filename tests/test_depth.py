@@ -90,3 +90,18 @@ def test_cubemap_depth_estimator(temp_image_dir: Path):
     assert res.min_depth >= 0.0
     assert res.max_depth <= 1.0
 
+
+def test_depth_anything_v2_factory():
+    from panogs.reconstruction.depth.depth_anything import DepthAnythingV2Estimator
+    from panogs.reconstruction.depth.cubemap import CubemapDepthEstimator
+
+    est_dav2 = get_depth_estimator("depth_anything_v2")
+    assert isinstance(est_dav2, DepthAnythingV2Estimator)
+    assert est_dav2.is_metric is True
+
+    est_cube = get_depth_estimator("cubemap_depth_anything")
+    assert isinstance(est_cube, CubemapDepthEstimator)
+    assert est_cube.underlying_estimator is not None
+    assert isinstance(est_cube.underlying_estimator, DepthAnythingV2Estimator)
+
+

@@ -133,15 +133,17 @@ def write_pointcloud(file_path: Union[str, Path], point_cloud: Any, binary: bool
 
 def read_point_cloud_ply(
     file_path: Union[str, Path],
-) -> Tuple[np.ndarray, np.ndarray]:
+    return_normals: bool = False,
+) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]]:
     """
-    Read a point cloud .ply file and return (points, colors).
+    Read a point cloud .ply file and return (points, colors) or (points, colors, normals).
 
     Args:
         file_path: Path to .ply file.
+        return_normals: If True, return a 3-tuple (points, colors, normals).
 
     Returns:
-        Tuple: (points: np.ndarray (N, 3) float32, colors: np.ndarray (N, 3) uint8)
+        Tuple: (points, colors) or (points, colors, normals)
     """
     target = Path(file_path)
     if not target.exists():
@@ -171,7 +173,14 @@ def read_point_cloud_ply(
                 properties.append((prop_type, prop_name))
 
         if num_vertices == 0:
-            return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.uint8)
+            pts = np.empty((0, 3), dtype=np.float32)
+            cols = np.empty((0, 3), dtype=np.uint8)
+            return (pts, cols, None) if return_normals else (pts, cols)
+
+        has_nx = any(p[1] == "nx" for p in properties)
+        has_ny = any(p[1] == "ny" for p in properties)
+        has_nz = any(p[1] == "nz" for p in properties)
+        has_normals_in_file = has_nx and has_ny and has_nz
 
         if is_binary:
             field_map = {
@@ -191,21 +200,45 @@ def read_point_cloud_ply(
             vertex_dtype = np.dtype(dtype_fields)
             data = np.fromfile(f, dtype=vertex_dtype, count=num_vertices)
             points = np.stack([data["x"], data["y"], data["z"]], axis=-1).astype(np.float32)
+
             if "red" in data.dtype.names and "green" in data.dtype.names and "blue" in data.dtype.names:
                 colors = np.stack([data["red"], data["green"], data["blue"]], axis=-1).astype(np.uint8)
             else:
                 colors = np.full((num_vertices, 3), 255, dtype=np.uint8)
-            return points, colors
+
+            normals = None
+            if has_normals_in_file and "nx" in data.dtype.names and "ny" in data.dtype.names and "nz" in data.dtype.names:
+                normals = np.stack([data["nx"], data["ny"], data["nz"]], axis=-1).astype(np.float32)
+
+            return (points, colors, normals) if return_normals else (points, colors)
         else:
             # ASCII parsing
             content = f.read().decode("ascii").strip().splitlines()
             points = []
             colors = []
+            normals = [] if has_normals_in_file else None
             for row in content[:num_vertices]:
                 tokens = row.split()
                 points.append([float(tokens[0]), float(tokens[1]), float(tokens[2])])
-                if len(tokens) >= 6:
+                if has_normals_in_file:
+                    normals.append([float(tokens[3]), float(tokens[4]), float(tokens[5])])
+                    colors.append([int(tokens[-3]), int(tokens[-2]), int(tokens[-1])])
+                elif len(tokens) >= 6:
                     colors.append([int(tokens[-3]), int(tokens[-2]), int(tokens[-1])])
                 else:
                     colors.append([255, 255, 255])
-            return np.array(points, dtype=np.float32), np.array(colors, dtype=np.uint8)
+
+            pts = np.array(points, dtype=np.float32)
+            cols = np.array(colors, dtype=np.uint8)
+            nrms = np.array(normals, dtype=np.float32) if normals is not None else None
+            return (pts, cols, nrms) if return_normals else (pts, cols)
+
+
+def read_pointcloud(file_path: Union[str, Path]) -> Any:
+    """
+    Read a .ply file and return a PointCloud object with points, colors, and normals (if present).
+    """
+    from panogs.reconstruction.pointcloud import PointCloud
+    pts, cols, nrms = read_point_cloud_ply(file_path, return_normals=True)
+    return PointCloud(points=pts, colors=cols, normals=nrms)
+

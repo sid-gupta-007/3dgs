@@ -1,89 +1,107 @@
-"""
-3D Gaussian Initialization from Point Clouds.
-Computes adaptive spatial scale per Gaussian from local k-nearest neighbor spacing.
-"""
+from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional, Tuple
 import numpy as np
 from scipy.spatial import cKDTree
 
 from panogs.core.gaussian.model import GaussianModel, logit, rgb_to_sh0
 from panogs.core.logging import get_logger
-from panogs.reconstruction.pointcloud import PointCloud
+from panogs.io.images import srgb_to_linear
+
+if TYPE_CHECKING:
+    from panogs.reconstruction.pointcloud import PointCloud
 
 
 def rotation_matrix_to_quaternion(R: np.ndarray) -> np.ndarray:
     """
-    Convert (N, 3, 3) rotation matrices to (N, 4) unit quaternions (qw, qx, qy, qz).
+    Convert (N, 3, 3) rotation matrices to (N, 4) unit quaternions (qw, qx, qy, qz)
+    using vectorized branchless Shepperd's algorithm.
     """
     N = R.shape[0]
     quats = np.zeros((N, 4), dtype=np.float32)
 
-    tr = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]
+    r00, r01, r02 = R[:, 0, 0], R[:, 0, 1], R[:, 0, 2]
+    r10, r11, r12 = R[:, 1, 0], R[:, 1, 1], R[:, 1, 2]
+    r20, r21, r22 = R[:, 2, 0], R[:, 2, 1], R[:, 2, 2]
+    tr = r00 + r11 + r22
 
-    # Standard Shepperd's algorithm or vectorized branchless quaternion conversion
-    for i in range(N):
-        r = R[i]
-        t = tr[i]
-        if t > 0.0:
-            S = np.sqrt(t + 1.0) * 2.0
-            qw = 0.25 * S
-            qx = (r[2, 1] - r[1, 2]) / S
-            qy = (r[0, 2] - r[2, 0]) / S
-            qz = (r[1, 0] - r[0, 1]) / S
-        elif (r[0, 0] > r[1, 1]) and (r[0, 0] > r[2, 2]):
-            S = np.sqrt(1.0 + r[0, 0] - r[1, 1] - r[2, 2]) * 2.0
-            qw = (r[2, 1] - r[1, 2]) / S
-            qx = 0.25 * S
-            qy = (r[0, 1] + r[1, 0]) / S
-            qz = (r[0, 2] + r[2, 0]) / S
-        elif r[1, 1] > r[2, 2]:
-            S = np.sqrt(1.0 + r[1, 1] - r[0, 0] - r[2, 2]) * 2.0
-            qw = (r[0, 2] - r[2, 0]) / S
-            qx = (r[0, 1] + r[1, 0]) / S
-            qy = 0.25 * S
-            qz = (r[1, 2] + r[2, 1]) / S
-        else:
-            S = np.sqrt(1.0 + r[2, 2] - r[0, 0] - r[1, 1]) * 2.0
-            qw = (r[1, 0] - r[0, 1]) / S
-            qx = (r[0, 2] + r[2, 0]) / S
-            qy = (r[1, 2] + r[2, 1]) / S
-            qz = 0.25 * S
-        quats[i] = [qw, qx, qy, qz]
+    m0 = tr > 0.0
+    if np.any(m0):
+        S = np.sqrt(np.maximum(tr[m0] + 1.0, 1e-12)) * 2.0
+        quats[m0, 0] = 0.25 * S
+        quats[m0, 1] = (r21[m0] - r12[m0]) / S
+        quats[m0, 2] = (r02[m0] - r20[m0]) / S
+        quats[m0, 3] = (r10[m0] - r01[m0]) / S
+
+    m1 = (~m0) & (r00 > r11) & (r00 > r22)
+    if np.any(m1):
+        S = np.sqrt(np.maximum(1.0 + r00[m1] - r11[m1] - r22[m1], 1e-12)) * 2.0
+        quats[m1, 0] = (r21[m1] - r12[m1]) / S
+        quats[m1, 1] = 0.25 * S
+        quats[m1, 2] = (r01[m1] + r10[m1]) / S
+        quats[m1, 3] = (r02[m1] + r20[m1]) / S
+
+    m2 = (~m0) & (~m1) & (r11 > r22)
+    if np.any(m2):
+        S = np.sqrt(np.maximum(1.0 + r11[m2] - r00[m2] - r22[m2], 1e-12)) * 2.0
+        quats[m2, 0] = (r02[m2] - r20[m2]) / S
+        quats[m2, 1] = (r01[m2] + r10[m2]) / S
+        quats[m2, 2] = 0.25 * S
+        quats[m2, 3] = (r12[m2] + r21[m2]) / S
+
+    m3 = (~m0) & (~m1) & (~m2)
+    if np.any(m3):
+        S = np.sqrt(np.maximum(1.0 + r22[m3] - r00[m3] - r11[m3], 1e-12)) * 2.0
+        quats[m3, 0] = (r10[m3] - r01[m3]) / S
+        quats[m3, 1] = (r02[m3] + r20[m3]) / S
+        quats[m3, 2] = (r12[m3] + r21[m3]) / S
+        quats[m3, 3] = 0.25 * S
 
     norms = np.linalg.norm(quats, axis=-1, keepdims=True)
     norms[norms == 0] = 1.0
-    return quats / norms
+    return (quats / norms).astype(np.float32)
+
+
+def estimate_dominant_light_direction(point_cloud: PointCloud) -> np.ndarray:
+    """
+    Estimate the primary directional light vector in world coordinates
+    from the brightest highlights in the scene point cloud colors and positions.
+    Defaults to overhead ceiling illumination [0.0, 1.0, 0.0] if unconstrained.
+    """
+    if point_cloud.colors is not None and len(point_cloud.colors) > 0:
+        rgb = point_cloud.colors.astype(np.float32)
+        luminance = 0.299 * rgb[:, 0] + 0.587 * rgb[:, 1] + 0.114 * rgb[:, 2]
+        bright_cutoff = np.percentile(luminance, 97)
+        bright_indices = np.where(luminance >= bright_cutoff)[0]
+
+        if len(bright_indices) >= 10:
+            bright_pts = point_cloud.points[bright_indices]
+            mean_pos = np.mean(bright_pts, axis=0)
+            norm = np.linalg.norm(mean_pos)
+            if norm > 1e-3:
+                return (mean_pos / norm).astype(np.float32)
+
+    return np.array([0.0, 1.0, 0.0], dtype=np.float32)
 
 
 def initialize_from_pointcloud(
     point_cloud: PointCloud,
-    default_opacity: float = 0.85,
-    k_scale_neighbors: int = 3,
-    scale_multiplier: float = 1.0,
+    default_opacity: float = 0.95,
+    k_scale_neighbors: int = 8,
+    scale_multiplier: float = 1.10,
     min_scale: float = 1e-4,
     max_scale: float = 10.0,
+    splat_shape: str = "hybrid",
+    sharpness: float = 0.5,
 ) -> GaussianModel:
     """
     Initialize a 3D Gaussian Splatting scene model from a PointCloud.
 
     - Positions: Directly set from point cloud XYZ.
-    - Scales: Anisotropic scales (sx, sy, sz) where sx, sy cover surface tangent spacing
-              and sz is thin normal thickness for flat surfels.
-    - Rotations: Quaternions aligned to surface normals (or identity if normals absent).
+    - Scales: Continuous surfel discs and light-aligned pointy needles.
+    - Rotations: Quaternions aligned to surface normals and dominant light directions.
     - Opacity: Initialized to default_opacity in logit space.
     - Colors: RGB [0, 255] converted to float [0, 1] and mapped to zeroth-order spherical harmonics (SH0).
-
-    Args:
-        point_cloud: Input PointCloud.
-        default_opacity: Initial opacity value in (0.0, 1.0) (default: 0.85).
-        k_scale_neighbors: Number of nearest neighbors to query for adaptive scale (default: 3).
-        scale_multiplier: Global scale multiplier (default: 1.0).
-        min_scale: Minimum scale clamp in meters (default: 1e-4).
-        max_scale: Maximum scale clamp in meters (default: 10.0).
-
-    Returns:
-        GaussianModel: Initialized 3D Gaussian model.
     """
     logger = get_logger("gaussian.init")
     N = point_cloud.num_points
@@ -91,64 +109,195 @@ def initialize_from_pointcloud(
     if N == 0:
         raise ValueError("Cannot initialize GaussianModel from an empty PointCloud.")
 
-    logger.info(f"Initializing {N:,} 3D Gaussians from point cloud...")
+    sharpness = float(np.clip(sharpness, 0.0, 1.0))
+    logger.info(f"Initializing {N:,} 3D Gaussians (shape='{splat_shape}', scale={scale_multiplier:.2f}) from point cloud...")
 
     # 1. Positions: (N, 3)
     xyz = point_cloud.points.copy()
 
-    # 2. Adaptive Scales from k-NN spacing
-    logger.info(f"Computing adaptive scales using k={k_scale_neighbors} nearest neighbors...")
+    # 2. Adaptive Scales with k-NN, outlier capping, and Angular Ray Footprint Capping
+    logger.info(f"Computing adaptive scales for {N:,} points...")
     tree = cKDTree(xyz)
-    distances, _ = tree.query(xyz, k=min(k_scale_neighbors + 1, N))
+    k_query = min(k_scale_neighbors + 1, N)
+    distances, neighbor_indices = tree.query(xyz, k=k_query)
+    if k_query == 1:
+        distances = distances[:, np.newaxis]
+        neighbor_indices = neighbor_indices[:, np.newaxis]
 
     if distances.shape[1] > 1:
-        mean_dists = np.mean(distances[:, 1:], axis=1)
+        k_near = min(4, distances.shape[1])
+        mean_dists = np.mean(distances[:, 1:k_near], axis=1)
+        base_scales = mean_dists * scale_multiplier
     else:
-        mean_dists = np.full(N, 0.05, dtype=np.float32)
+        base_scales = np.full(N, 0.05, dtype=np.float32)
 
     # Avoid zero distances for co-located points
-    mean_dists[mean_dists <= 0.0] = 0.01
+    base_scales[base_scales <= 0.0] = 0.01
 
-    adaptive_scales = np.clip(mean_dists * scale_multiplier, min_scale, max_scale).astype(np.float32)
+    # Cap outlier k-NN distances at 3× median to prevent blown-out splats
+    median_scale = float(np.median(base_scales))
+    outlier_cap = median_scale * 3.0
+    base_scales = np.minimum(base_scales, outlier_cap)
+    adaptive_scales = np.clip(base_scales, min_scale, max_scale).astype(np.float32)
 
-    # 3. Orientations and Anisotropic Scales from Surface Normals
-    if point_cloud.normals is not None and len(point_cloud.normals) == N:
-        logger.info("Aligning 3D Gaussian orientations and tangential scales with surface normals...")
+    # For structured panorama point clouds: cap scale by ray angular footprint
+    # and enforce a polar floor only near nadir/zenith poles (|dy| > 0.85)
+    # where spherical ring convergence shrinks horizontal neighbor spacing.
+    if point_cloud.metadata and "total_pixels" in point_cloud.metadata:
+        point_depths = np.maximum(np.linalg.norm(xyz, axis=-1), 1e-4)
+        total_pixels = point_cloud.metadata["total_pixels"]
+        est_height = max(1.0, np.sqrt(total_pixels / 2.0))
+        angular_pixel = np.pi / est_height
+        max_angular_scale = point_depths * angular_pixel * 1.30 * scale_multiplier
+        adaptive_scales = np.minimum(
+            adaptive_scales,
+            np.maximum(max_angular_scale, min_scale).astype(np.float32),
+        )
+        abs_dy = np.abs(xyz[:, 1]) / point_depths
+        pole_mask = abs_dy > 0.85
+        if np.any(pole_mask):
+            pole_floor = point_depths[pole_mask] * angular_pixel * 0.98 * scale_multiplier
+            adaptive_scales[pole_mask] = np.maximum(adaptive_scales[pole_mask], pole_floor.astype(np.float32))
+
+    logger.info(
+        f"Scale stats: median={median_scale:.5f}m, outlier_cap={outlier_cap:.5f}m, "
+        f"after_clip: mean={np.mean(adaptive_scales):.5f}m, max={np.max(adaptive_scales):.5f}m"
+    )
+
+    # 3. Orientations and Anisotropic Scales from Surface Normals & Light Flow
+    shape_mode = splat_shape.lower().strip()
+    if point_cloud.normals is not None and len(point_cloud.normals) == N and shape_mode != "isotropic":
+        logger.info(f"Aligning 3D Gaussian orientations and '{shape_mode}' scales with surface normals...")
         normals = point_cloud.normals.astype(np.float32)
         norms = np.linalg.norm(normals, axis=-1, keepdims=True)
         norms[norms == 0] = 1.0
         normals = normals / norms
 
-        # Build orthonormal tangent frame [t1, t2, n]
-        # Choose helper vector 'a' not parallel to normal
-        helper = np.zeros_like(normals)
-        is_y_dominant = np.abs(normals[:, 1]) > 0.9
-        helper[is_y_dominant, 0] = 1.0   # (1, 0, 0)
-        helper[~is_y_dominant, 1] = 1.0  # (0, 1, 0)
+        # Build continuous orthonormal tangent frame [t1, t2, normals] using Duff et al. (JCGT 2017)
+        nx = normals[:, 0]
+        ny = normals[:, 1]
+        nz = normals[:, 2]
 
-        t1 = np.cross(helper, normals)
-        t1_norm = np.linalg.norm(t1, axis=-1, keepdims=True)
-        t1_norm[t1_norm == 0] = 1.0
-        t1 = t1 / t1_norm
+        sign = np.where(nz >= 0.0, 1.0, -1.0).astype(np.float32)
+        a = -1.0 / (sign + nz + 1e-7)
+        b = nx * ny * a
 
-        t2 = np.cross(normals, t1)
-        t2_norm = np.linalg.norm(t2, axis=-1, keepdims=True)
-        t2_norm[t2_norm == 0] = 1.0
-        t2 = t2 / t2_norm
+        t1_x = 1.0 + sign * nx * nx * a
+        t1_y = sign * b
+        t1_z = -sign * nx
+        t1 = np.stack([t1_x, t1_y, t1_z], axis=-1)
 
-        # R matrix with columns [t1, t2, n]
-        R = np.stack([t1, t2, normals], axis=-1)
+        t2_x = b
+        t2_y = sign + ny * ny * a
+        t2_z = -ny
+        t2 = np.stack([t2_x, t2_y, t2_z], axis=-1)
+
+        # Light-source-aware tangent elongation: align t1 with projected light vector
+        L = estimate_dominant_light_direction(point_cloud)
+        dot_LN = np.sum(normals * L, axis=-1, keepdims=True)
+        t_light = L - dot_LN * normals
+        t_light_len = np.linalg.norm(t_light, axis=-1, keepdims=True)
+        use_light_t = (t_light_len > 0.05)[:, 0]
+
+        t1_final = t1.copy()
+        t1_final[use_light_t] = (t_light[use_light_t] / t_light_len[use_light_t]).astype(np.float32)
+
+        t2_final = np.cross(normals, t1_final)
+        t2_final_norm = np.linalg.norm(t2_final, axis=-1, keepdims=True)
+        t2_final_norm[t2_final_norm == 0] = 1.0
+        t2_final = (t2_final / t2_final_norm).astype(np.float32)
+
+        # R matrix with columns [t1_final, t2_final, normals]
+        R = np.stack([t1_final, t2_final, normals], axis=-1)
         rotation_quats = rotation_matrix_to_quaternion(R)
 
-        # Anisotropic scales: sx, sy are tangential to surface (1.2x spacing to cover gaps),
-        # sz is thin normal thickness (0.15x) so splats hug walls/floors flatly
-        sx = adaptive_scales * 1.25
-        sy = adaptive_scales * 1.25
-        sz = np.clip(adaptive_scales * 0.15, min_scale, max_scale)
+        edge_mask = point_cloud.metadata.get("edge_mask", None) if point_cloud.metadata else None
+        is_edge = np.asarray(edge_mask, dtype=bool) if (edge_mask is not None and len(edge_mask) == N) else np.zeros(N, dtype=bool)
+
+        if shape_mode in ("cylindrical", "needle"):
+            # Directional needles along silhouette contours
+            sx = adaptive_scales * 1.40
+            sy = np.clip(adaptive_scales * 0.45, min_scale, max_scale)
+            sz = np.clip(adaptive_scales * 0.08, min_scale, max_scale)
+        elif shape_mode == "surfel":
+            # Flat planar surfel discs with full continuous overlap (zero stripes/gaps)
+            sx = adaptive_scales * 1.30
+            sy = adaptive_scales * 1.30
+            sz = np.clip(adaptive_scales * 0.05, min_scale, max_scale)
+        elif shape_mode in ("pointy", "light_pointy"):
+            # Light-oriented anisotropic surfels: elongated along light flow without leaving gaps
+            sx = adaptive_scales * 1.35
+            sy = adaptive_scales * 1.20
+            sz = np.clip(adaptive_scales * 0.06, min_scale, max_scale)
+        else:
+            # Adaptive (Default): use broad surfels on coherent planes, round
+            # splats where local normals vary, and narrow splats at detected
+            # depth boundaries. This avoids forcing one shape across the scene.
+            normal_agreement = np.ones(N, dtype=np.float32)
+            color_change = np.zeros(N, dtype=np.float32)
+            if k_query > 1:
+                neighbor_ids = neighbor_indices[:, 1:]
+                # Chunk the gather to bound temporary memory on large panoramas.
+                for start in range(0, N, 100_000):
+                    end = min(start + 100_000, N)
+                    neighbor_normals = normals[neighbor_ids[start:end]]
+                    agreement = np.abs(np.sum(
+                        normals[start:end, None, :] * neighbor_normals, axis=-1
+                    ))
+                    normal_agreement[start:end] = np.mean(agreement, axis=1)
+
+                    # PLY point clouds retain RGB even when reconstruction
+                    # metadata (such as a depth-edge mask) is unavailable.
+                    neighbor_rgb = point_cloud.colors[neighbor_ids[start:end]].astype(np.float32)
+                    center_rgb = point_cloud.colors[start:end, None, :].astype(np.float32)
+                    color_change[start:end] = np.mean(
+                        np.mean(np.abs(neighbor_rgb - center_rgb), axis=-1) / 255.0,
+                        axis=1,
+                    )
+
+            # High agreement indicates a locally planar patch. Low agreement
+            # makes the splat rounder to avoid stretching across curvature,
+            # corners, or unreliable monocular geometry.
+            planar = np.clip((normal_agreement - 0.65) / 0.30, 0.0, 1.0)
+            # Normalize against this scene's own color-variation distribution.
+            # Absolute RGB thresholds barely triggered on dense point clouds,
+            # even at real image edges, so use the upper detail quantiles.
+            detail_low, detail_high = np.quantile(color_change, [0.65, 0.95])
+            if detail_high > detail_low + 1e-6:
+                image_detail = np.clip(
+                    (color_change - detail_low) / (detail_high - detail_low), 0.0, 1.0
+                )
+            else:
+                image_detail = np.zeros(N, dtype=np.float32)
+            # Color edges and texture detail call for compact, round splats
+            # even on locally planar geometry. The top detail band becomes
+            # nearly round; moderate detail smoothly transitions from surfels.
+            planar *= 1.0 - 0.90 * image_detail
+            logger.info(
+                "Adaptive shape mix: %.1f%% planar surfels, %.1f%% round/detail, %.1f%% edge needles",
+                100.0 * np.mean(planar >= 0.95),
+                100.0 * np.mean(planar <= 0.05),
+                100.0 * np.mean(is_edge),
+            )
+            sphere_factor = 0.82 - 0.14 * sharpness
+            tangent_factor = sphere_factor + (1.22 - sphere_factor) * planar
+            min_thickness = 0.07 - 0.03 * sharpness
+            thickness_factor = sphere_factor + (min_thickness - sphere_factor) * planar
+            sx = adaptive_scales * tangent_factor
+            sy = adaptive_scales * tangent_factor
+            sz = np.clip(adaptive_scales * thickness_factor, min_scale, max_scale)
+
+            # Strong depth boundaries get a compact, symmetric tangent profile
+            # so splats do not bridge foreground/background or spike toward light sources.
+            if np.any(is_edge):
+                sx[is_edge] = np.clip(adaptive_scales[is_edge] * 0.85, min_scale, max_scale)
+                sy[is_edge] = np.clip(adaptive_scales[is_edge] * 0.85, min_scale, max_scale)
+                sz[is_edge] = np.clip(adaptive_scales[is_edge] * 0.10, min_scale, max_scale)
+
         scales = np.stack([sx, sy, sz], axis=-1).astype(np.float32)
     else:
         # Isotropic initial scales (s, s, s)
-        scales = np.stack([adaptive_scales] * 3, axis=-1).astype(np.float32)
+        scales = np.stack([adaptive_scales * 1.15] * 3, axis=-1).astype(np.float32)
         rotation_quats = np.zeros((N, 4), dtype=np.float32)
         rotation_quats[:, 0] = 1.0  # Identity quaternion (qw=1, qx=0, qy=0, qz=0)
 
@@ -159,7 +308,11 @@ def initialize_from_pointcloud(
     opacity_logits = np.full((N, 1), init_logit, dtype=np.float32)
 
     # 5. Colors: convert uint8 RGB [0, 255] -> float [0, 1] -> SH0
-    rgb_float = point_cloud.colors.astype(np.float32) / 255.0
+    rgb_float = (
+        np.maximum(point_cloud.radiance, 0.0)
+        if point_cloud.radiance is not None
+        else srgb_to_linear(point_cloud.colors.astype(np.float32) / 255.0)
+    )
     features_dc = rgb_to_sh0(rgb_float)
 
     logger.info(

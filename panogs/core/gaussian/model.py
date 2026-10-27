@@ -13,19 +13,18 @@ SH_C0 = 0.28209479177387814  # 1 / (2 * sqrt(pi))
 
 def rgb_to_sh0(rgb: np.ndarray) -> np.ndarray:
     """
-    Convert RGB in [0.0, 1.0] to zeroth-order spherical harmonics (SH0).
+    Convert nonnegative linear RGB radiance to zeroth-order spherical harmonics (SH0).
     Formula: SH0 = (RGB - 0.5) / SH_C0
     """
-    rgb_clipped = np.clip(rgb, 0.0, 1.0)
-    return (rgb_clipped - 0.5) / SH_C0
+    return (np.maximum(rgb, 0.0) - 0.5) / SH_C0
 
 
 def sh0_to_rgb(sh0: np.ndarray) -> np.ndarray:
     """
-    Convert zeroth-order spherical harmonics (SH0) back to RGB in [0.0, 1.0].
-    Formula: RGB = clamp(SH0 * SH_C0 + 0.5, 0.0, 1.0)
+    Convert zeroth-order spherical harmonics (SH0) back to nonnegative RGB radiance.
+    Values above 1.0 are retained for HDR; display formats clamp during export.
     """
-    return np.clip(sh0 * SH_C0 + 0.5, 0.0, 1.0)
+    return np.maximum(sh0 * SH_C0 + 0.5, 0.0)
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
@@ -121,7 +120,7 @@ class GaussianModel:
         opacities: np.ndarray,
     ) -> "GaussianModel":
         """
-        Create a GaussianModel from physical domain values (RGB [0, 1], opacities [0, 1], positive scales).
+        Create a GaussianModel from linear RGB radiance, opacities [0, 1], and positive scales.
         """
         scaling_log = np.log(np.maximum(scales, 1e-6))
         features_dc = rgb_to_sh0(colors_rgb)
@@ -147,33 +146,37 @@ class GaussianModel:
 
     def get_scaling(self) -> np.ndarray:
         """Return (N, 3) strictly positive scaling standard deviations sigma = exp(s_log)."""
-        return np.exp(self._scaling_log)
+        safe_log = np.clip(self._scaling_log, -15.0, 5.0)
+        return np.exp(safe_log)
 
     def get_rotation_quats(self) -> np.ndarray:
         """Return (N, 4) normalized unit quaternions (qw, qx, qy, qz)."""
         norms = np.linalg.norm(self._rotation_quats, axis=-1, keepdims=True)
-        norms[norms == 0] = 1.0
-        return self._rotation_quats / norms
+        norms[np.isnan(norms) | (norms == 0)] = 1.0
+        return np.nan_to_num(self._rotation_quats / norms, nan=0.0)
 
     def get_rotation_matrices(self) -> np.ndarray:
         """Return (N, 3, 3) 3D orthonormal rotation matrices R."""
-        return quaternion_to_rotation_matrix(self._rotation_quats)
+        return quaternion_to_rotation_matrix(self.get_rotation_quats())
 
     def get_opacity(self) -> np.ndarray:
         """Return (N, 1) opacities alpha in (0.0, 1.0)."""
-        return sigmoid(self._opacity_logits)
+        safe_logits = np.clip(self._opacity_logits, -15.0, 15.0)
+        return sigmoid(safe_logits)
 
     def get_features_dc(self) -> np.ndarray:
         """Return (N, 3) zeroth-order spherical harmonics (SH0)."""
         return self._features_dc
 
     def get_rgb(self) -> np.ndarray:
-        """Return (N, 3) float32 RGB colors in [0.0, 1.0]."""
+        """Return (N, 3) float32 nonnegative linear RGB radiance."""
         return sh0_to_rgb(self._features_dc)
 
     def get_rgb_uint8(self) -> np.ndarray:
-        """Return (N, 3) uint8 RGB colors in [0, 255]."""
-        return (self.get_rgb() * 255.0).astype(np.uint8)
+        """Return (N, 3) uint8 RGB colors in [0, 255] with HDR highlight roll-off."""
+        from panogs.io.images import tonemap_hdr_to_srgb
+        srgb = tonemap_hdr_to_srgb(self.get_rgb())
+        return (srgb * 255.0).round().astype(np.uint8)
 
     # ─────────────────────────────────────────────────────────────
     # 3D Covariance Calculation

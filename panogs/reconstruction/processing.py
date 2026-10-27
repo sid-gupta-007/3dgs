@@ -53,10 +53,18 @@ def voxel_downsample(
     col_accum = np.zeros((num_voxels, 3), dtype=np.float64)
     np.add.at(col_accum, inverse_indices, colors.astype(np.float64))
     mean_colors = np.clip(np.round(col_accum / counts[:, None]), 0, 255).astype(np.uint8)
+    mean_radiance = None
+    if point_cloud.radiance is not None:
+        rad_accum = np.zeros((num_voxels, 3), dtype=np.float64)
+        np.add.at(rad_accum, inverse_indices, point_cloud.radiance.astype(np.float64))
+        mean_radiance = (rad_accum / counts[:, None]).astype(np.float32)
 
     return PointCloud(
         points=centroid_points,
         colors=mean_colors,
+        radiance=mean_radiance,
+        confidence=None,
+        normals=None,
         metadata={
             **point_cloud.metadata,
             "voxel_size": voxel_size,
@@ -106,11 +114,13 @@ def remove_statistical_outliers(
     filtered_points = points[inlier_mask]
     filtered_colors = point_cloud.colors[inlier_mask]
     filtered_normals = point_cloud.normals[inlier_mask] if point_cloud.normals is not None else None
+    filtered_radiance = point_cloud.radiance[inlier_mask] if point_cloud.radiance is not None else None
 
     return PointCloud(
         points=filtered_points,
         colors=filtered_colors,
         normals=filtered_normals,
+        radiance=filtered_radiance,
         metadata={
             **point_cloud.metadata,
             "sor_k_neighbors": k_neighbors,
@@ -184,6 +194,7 @@ def estimate_surface_normals(
         points=points,
         colors=point_cloud.colors,
         normals=normals,
+        radiance=point_cloud.radiance,
         confidence=point_cloud.confidence,
         metadata={
             **point_cloud.metadata,

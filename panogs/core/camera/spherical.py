@@ -5,7 +5,7 @@ Provides functions to map 2D equirectangular panorama pixels into
 spherical coordinates (longitude, latitude) and normalized 3D ray directions.
 """
 
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 import numpy as np
 
 
@@ -92,6 +92,8 @@ def equirectangular_pixel_to_ray(
 def equirectangular_rays(
     height: int,
     width: int,
+    jitter: bool = False,
+    rng: Optional[np.random.Generator] = None,
 ) -> np.ndarray:
     """
     Generate a dense grid of unit ray directions for an equirectangular panorama of size (H, W).
@@ -99,14 +101,23 @@ def equirectangular_rays(
     Args:
         height: Image height H.
         width: Image width W.
+        jitter: If True, apply sub-pixel jitter to ray sampling coordinates to prevent moire/scanlines.
+        rng: Optional NumPy random Generator.
 
     Returns:
         np.ndarray: Array of shape (H, W, 3) where each vector has unit length.
     """
-    # Generate pixel center coordinate grids
+    # Generate pixel coordinate grids
     u_coords = np.arange(width, dtype=np.float32)
     v_coords = np.arange(height, dtype=np.float32)
     u_grid, v_grid = np.meshgrid(u_coords, v_coords, indexing="xy")
+
+    if jitter:
+        gen = rng if rng is not None else np.random.default_rng(42)
+        u_jitter = gen.uniform(-0.35, 0.35, size=(height, width)).astype(np.float32)
+        v_jitter = gen.uniform(-0.35, 0.35, size=(height, width)).astype(np.float32)
+        u_grid = u_grid + u_jitter
+        v_grid = np.clip(v_grid + v_jitter, 0.0, height - 1.0)
 
     theta, phi = pixel_to_spherical(u_grid, v_grid, width, height)
     rays = spherical_to_ray(theta, phi)

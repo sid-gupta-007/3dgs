@@ -29,6 +29,16 @@ panogs = "panogs.apps.cli:main"
 where = ["."]
 include = ["panogs*"]
 
+[tool.setuptools.package-data]
+"panogs.apps.viewer" = [
+    "index.html",
+    "studio.html",
+    "SUPERSPLAT_LICENSE.txt",
+    "supersplat_dist/*",
+    "supersplat_dist/static/*",
+    "supersplat_dist/static/**/*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

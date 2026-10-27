@@ -13,6 +13,46 @@ from PIL import Image
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".hdr", ".exr"}
 
 
+def srgb_to_linear(rgb: np.ndarray) -> np.ndarray:
+    """Convert display-encoded sRGB in [0, 1] to linear-light RGB."""
+    values = np.asarray(rgb, dtype=np.float32)
+    return np.where(values <= 0.04045, values / 12.92, ((values + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(rgb: np.ndarray) -> np.ndarray:
+    """Convert nonnegative linear-light RGB to display-encoded sRGB."""
+    values = np.maximum(np.asarray(rgb, dtype=np.float32), 0.0)
+    return np.where(values <= 0.0031308, values * 12.92, 1.055 * np.power(values, 1.0 / 2.4) - 0.055)
+
+
+def tonemap_hdr_to_srgb(hdr_rgb: np.ndarray) -> np.ndarray:
+    """Convert linear HDR radiance to display-referred sRGB in [0, 1] with highlight roll-off.
+
+    When all values are already within [0, 1], applies standard linear-to-sRGB encoding.
+    When HDR values exceed 1.0, calibrates log-average exposure and applies extended
+    Reinhard tone mapping so bright windows and light fixtures retain detail instead
+    of clipping to flat white.
+    """
+    clean = np.nan_to_num(hdr_rgb, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    clean = np.maximum(clean, 0.0)
+    peak = float(np.max(clean)) if clean.size > 0 else 0.0
+    if peak <= 1.0:
+        return np.clip(linear_to_srgb(clean), 0.0, 1.0)
+
+    luma = 0.2126 * clean[..., 0] + 0.7152 * clean[..., 1] + 0.0722 * clean[..., 2]
+    valid_luma = luma[luma > 1e-4]
+    if valid_luma.size > 0:
+        log_avg = float(np.exp(np.mean(np.log(valid_luma))))
+        exposure = float(np.clip(0.22 / max(log_avg, 1e-4), 0.15, 6.0))
+    else:
+        exposure = 1.0
+
+    exposed = clean * exposure
+    l_white = max(float(np.max(exposed)) * 1.15, 2.0)
+    mapped = (exposed * (1.0 + exposed / (l_white * l_white))) / (1.0 + exposed)
+    return np.clip(linear_to_srgb(np.clip(mapped, 0.0, 1.0)), 0.0, 1.0)
+
+
 @dataclass
 class ImageMetadata:
     """Metadata describing an image file and its memory footprint."""
@@ -164,9 +204,10 @@ def load_image(
         else:
             hdr_rgb = cv2.cvtColor(hdr_bgr, cv2.COLOR_BGR2RGB)
 
-        # Tone map linear radiance to display RGB via Reinhard operator
-        toned = hdr_rgb / (1.0 + hdr_rgb)
-        uint8_rgb = (np.clip(toned, 0.0, 1.0) * 255.0).astype(np.uint8)
+        # Convert linear HDR radiance to display-referred sRGB with highlight compression
+        # so neural depth estimators preserve geometry across bright windows and lamps.
+        srgb = tonemap_hdr_to_srgb(hdr_rgb)
+        uint8_rgb = (srgb * 255.0).round().astype(np.uint8)
         img = Image.fromarray(uint8_rgb)
     else:
         img = Image.open(file_path)
@@ -184,6 +225,44 @@ def load_image(
             img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
     return img
+
+
+def load_hdr_radiance(
+    path: Union[str, Path],
+    max_resolution: Optional[int] = None,
+) -> np.ndarray:
+    """Load an HDR/EXR image as unmodified linear-light float32 RGB radiance.
+
+    Unlike :func:`load_image`, this function does not apply exposure, tone mapping,
+    clipping, gamma encoding, or 8-bit quantization. It is intended for rendering
+    and optimization targets; neural depth estimators should use ``load_image``.
+    """
+    file_path = validate_image_path(path)
+    if file_path.suffix.lower() not in {".hdr", ".exr"}:
+        raise ValueError(f"Expected an HDR or EXR image, got: {file_path.suffix}")
+
+    import cv2
+
+    hdr_bgr = cv2.imread(str(file_path), cv2.IMREAD_UNCHANGED)
+    if hdr_bgr is None:
+        raise ValueError(f"Failed to read HDR/EXR image: {file_path}")
+    if hdr_bgr.ndim == 2:
+        hdr_rgb = np.repeat(hdr_bgr[:, :, None], 3, axis=2)
+    else:
+        if hdr_bgr.shape[2] < 3:
+            hdr_rgb = np.repeat(hdr_bgr[:, :, :1], 3, axis=2)
+        else:
+            hdr_rgb = cv2.cvtColor(hdr_bgr[:, :, :3], cv2.COLOR_BGR2RGB)
+
+    hdr_rgb = np.nan_to_num(hdr_rgb, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    if max_resolution is not None:
+        height, width = hdr_rgb.shape[:2]
+        longest = max(width, height)
+        if longest > max_resolution:
+            scale = max_resolution / float(longest)
+            size = (max(1, round(width * scale)), max(1, round(height * scale)))
+            hdr_rgb = cv2.resize(hdr_rgb, size, interpolation=cv2.INTER_AREA)
+    return np.ascontiguousarray(hdr_rgb)
 
 
 def load_image_as_numpy(

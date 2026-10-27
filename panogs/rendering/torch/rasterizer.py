@@ -106,8 +106,8 @@ class TorchGaussianModel(nn.Module):
         return torch.sigmoid(self._opacity_logits)
 
     def get_rgb(self) -> torch.Tensor:
-        """RGB color in [0, 1] from SH0."""
-        return torch.clamp(self._features_dc * SH_C0 + 0.5, 0.0, 1.0)
+        """Nonnegative linear RGB radiance from SH0; HDR values may exceed 1."""
+        return torch.clamp(self._features_dc * SH_C0 + 0.5, min=0.0)
 
     def get_covariance_3d(self) -> torch.Tensor:
         """
@@ -140,7 +140,7 @@ def render_gaussians_torch(
 
     Returns:
         Tuple:
-            - rendered_image: (H, W, 3) float32 torch.Tensor in [0, 1].
+            - rendered_image: (H, W, 3) float32 linear RGB radiance tensor (may exceed 1 for HDR).
             - render_info: Dictionary containing 'screen_pts', 'vis_idx' for gradient tracking.
     """
     device = model._xyz.device
@@ -301,10 +301,8 @@ def render_gaussians_torch(
     # Composite background
     bg = torch.tensor(bg_color, device=device, dtype=dtype).view(1, 1, 3)
     final_image = acc_color + transmittance.unsqueeze(-1) * bg
-    final_clamped = torch.clamp(final_image, 0.0, 1.0)
-
     render_info = {
         "screen_pts": screen_pts,
         "vis_idx": vis_idx,
     }
-    return final_clamped, render_info
+    return final_image, render_info

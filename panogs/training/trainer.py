@@ -13,7 +13,12 @@ import torch
 
 from panogs.core.gaussian.model import GaussianModel
 from panogs.core.logging import get_logger
-from panogs.io.gaussian_ply import load_gaussian_ply, save_gaussian_ply, save_gaussian_splat
+from panogs.io.gaussian_ply import (
+    load_gaussian_ply,
+    save_gaussian_hdr_splat,
+    save_gaussian_ply,
+    save_gaussian_splat,
+)
 from panogs.rendering.torch.rasterizer import TorchGaussianModel, render_gaussians_torch
 from panogs.training.dataset import TrainingView, generate_training_views
 from panogs.training.losses import combined_loss
@@ -43,11 +48,12 @@ class TrainingConfig:
 
 
 def calculate_psnr(img1: torch.Tensor, img2: torch.Tensor) -> float:
-    """Calculate Peak Signal-to-Noise Ratio (PSNR) in dB."""
+    """Calculate PSNR in dB using the target's radiance peak as its range."""
     mse = torch.mean((img1 - img2) ** 2).item()
     if mse == 0:
         return float("inf")
-    return float(10.0 * np.log10(1.0 / mse))
+    data_range = max(float(torch.max(torch.abs(img2)).item()), 1.0)
+    return float(10.0 * np.log10((data_range * data_range) / mse))
 
 
 def train_gaussians(
@@ -186,5 +192,8 @@ def train_gaussians(
         splat_path = output_ply_path.with_suffix(".splat")
         save_gaussian_splat(splat_path, final_np_model)
         logger.info(f"Saved optimized WebGL SPLAT to {splat_path}")
+        hdr_splat_path = output_ply_path.with_suffix(".hdrsplat")
+        save_gaussian_hdr_splat(hdr_splat_path, final_np_model)
+        logger.info(f"Saved HDR WebGL SPLAT to {hdr_splat_path}")
 
     return final_np_model, history
