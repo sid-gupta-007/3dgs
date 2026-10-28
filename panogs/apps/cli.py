@@ -24,16 +24,38 @@ from panogs.io.gaussian_ply import (
 )
 from panogs.io.images import inspect_image
 from panogs.io.ply import read_point_cloud_ply, read_pointcloud, write_pointcloud
-from panogs.reconstruction.depth import get_depth_estimator
-from panogs.reconstruction.panorama import generate_synthetic_sphere, reconstruct_layout_panorama
-from panogs.reconstruction.pointcloud import PointCloud, reconstruct_from_image
-from panogs.reconstruction.processing import process_point_cloud
-from panogs.rendering.camera import create_orbit_camera
-from panogs.rendering.cpu.rasterizer import render_gaussians_cpu
-from panogs.benchmarks.benchmark import benchmark_scene
-from panogs.core.compression import compress_scene, prune_gaussians_by_importance
-from panogs.training.trainer import TrainingConfig, train_gaussians
 from panogs.apps.viewer import start_viewer_server
+
+
+def __getattr__(name: str):
+    if name == "get_depth_estimator":
+        from panogs.reconstruction.depth import get_depth_estimator
+        return get_depth_estimator
+    if name in {"generate_synthetic_sphere", "reconstruct_layout_panorama"}:
+        from panogs.reconstruction import panorama
+        return getattr(panorama, name)
+    if name in {"PointCloud", "reconstruct_from_image"}:
+        from panogs.reconstruction import pointcloud
+        return getattr(pointcloud, name)
+    if name == "process_point_cloud":
+        from panogs.reconstruction.processing import process_point_cloud
+        return process_point_cloud
+    if name == "create_orbit_camera":
+        from panogs.rendering.camera import create_orbit_camera
+        return create_orbit_camera
+    if name == "render_gaussians_cpu":
+        from panogs.rendering.cpu.rasterizer import render_gaussians_cpu
+        return render_gaussians_cpu
+    if name == "benchmark_scene":
+        from panogs.benchmarks.benchmark import benchmark_scene
+        return benchmark_scene
+    if name in {"compress_scene", "prune_gaussians_by_importance"}:
+        from panogs.core import compression
+        return getattr(compression, name)
+    if name in {"TrainingConfig", "train_gaussians"}:
+        from panogs.training import trainer
+        return getattr(trainer, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -763,6 +785,8 @@ def handle_inspect(args: argparse.Namespace) -> int:
 
 def handle_panorama(args: argparse.Namespace) -> int:
     """Handler for 'panogs panorama' subcommand."""
+    from panogs.reconstruction.panorama import generate_synthetic_sphere
+
     logger = get_logger("cli.panorama")
     image_path = Path(args.image_path)
     output_path = Path(args.output)
@@ -790,6 +814,8 @@ def handle_panorama(args: argparse.Namespace) -> int:
 
 def handle_depth(args: argparse.Namespace) -> int:
     """Handler for 'panogs depth' subcommand."""
+    from panogs.reconstruction.depth import get_depth_estimator
+
     logger = get_logger("cli.depth")
     image_path = Path(args.image_path)
     output_dir = Path(args.output_dir)
@@ -823,6 +849,10 @@ def handle_depth(args: argparse.Namespace) -> int:
 
 def handle_reconstruct(args: argparse.Namespace) -> int:
     """Handler for 'panogs reconstruct' subcommand."""
+    from panogs.reconstruction.depth import get_depth_estimator
+    from panogs.reconstruction.panorama import reconstruct_layout_panorama
+    from panogs.reconstruction.pointcloud import reconstruct_from_image
+
     logger = get_logger("cli.reconstruct")
     image_path = Path(args.image_path)
     output_path = Path(args.output)
@@ -1004,6 +1034,9 @@ def handle_video(args: argparse.Namespace) -> int:
 
 def handle_process(args: argparse.Namespace) -> int:
     """Handler for 'panogs process' subcommand."""
+    from panogs.reconstruction.pointcloud import PointCloud
+    from panogs.reconstruction.processing import process_point_cloud
+
     logger = get_logger("cli.process")
     input_path = Path(args.input_ply)
     output_path = Path(args.output)
@@ -1042,6 +1075,8 @@ def handle_process(args: argparse.Namespace) -> int:
 
 def handle_init_gaussians(args: argparse.Namespace) -> int:
     """Handler for 'panogs init-gaussians' subcommand."""
+    from panogs.reconstruction.processing import process_point_cloud
+
     logger = get_logger("cli.init_gaussians")
     input_path = Path(args.input_ply)
     output_path = Path(args.output)
@@ -1095,6 +1130,9 @@ def handle_init_gaussians(args: argparse.Namespace) -> int:
 
 def handle_render(args: argparse.Namespace) -> int:
     """Handler for 'panogs render' subcommand."""
+    from panogs.rendering.camera import create_orbit_camera
+    from panogs.rendering.cpu.rasterizer import render_gaussians_cpu
+
     logger = get_logger("cli.render")
     input_path = Path(args.gaussians_ply)
     output_path = Path(args.output)
@@ -1144,6 +1182,8 @@ def handle_render(args: argparse.Namespace) -> int:
 
 def handle_train(args: argparse.Namespace) -> int:
     """Handler for 'panogs train' subcommand."""
+    from panogs.training.trainer import TrainingConfig, train_gaussians
+
     logger = get_logger("cli.train")
     image_path = Path(args.image_path)
     init_ply_path = Path(args.init_ply)
@@ -1227,6 +1267,8 @@ def handle_studio(args: argparse.Namespace) -> int:
 
 def handle_compress(args: argparse.Namespace) -> int:
     """Handler for 'panogs compress' subcommand."""
+    from panogs.core.compression import prune_gaussians_by_importance
+
     logger = get_logger("cli.compress")
     input_path = Path(args.input_path)
     output_path = Path(args.output)
@@ -1271,6 +1313,8 @@ def handle_compress(args: argparse.Namespace) -> int:
 
 def handle_benchmark(args: argparse.Namespace) -> int:
     """Handler for 'panogs benchmark' subcommand."""
+    from panogs.benchmarks.benchmark import benchmark_scene
+
     logger = get_logger("cli.benchmark")
     model_path = Path(args.model_path)
 

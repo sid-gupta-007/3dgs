@@ -385,8 +385,10 @@ class SplatViewerHandler(SimpleHTTPRequestHandler):
             self.wfile.write(content)
             return
 
-        if request_path == "/" or request_path.startswith("/index.html"):
-            html_path = Path(__file__).parent / ("studio.html" if self.studio_mode else "index.html")
+        if request_path in {"/", "/studio", "/studio/"} or request_path.startswith("/index.html"):
+            html_path = Path(__file__).parent / (
+                "studio.html" if (self.studio_mode or request_path in {"/studio", "/studio/"}) else "index.html"
+            )
             if html_path.exists():
                 with open(html_path, "r", encoding="utf-8") as f:
                     content = f.read().encode("utf-8")
@@ -665,6 +667,7 @@ def start_viewer_server(
     SplatViewerHandler.default_scene_gaussians = num_gaussians
     SplatViewerHandler.default_scene_size_mb = round(len(splat_data) / (1024 * 1024), 1)
     SplatViewerHandler.output_dir = (Path.cwd() / "output").resolve()
+    SplatViewerHandler.output_dir.mkdir(parents=True, exist_ok=True)
     SplatViewerHandler.jobs = {}
     SplatViewerHandler.active_reconstruction = None
     SplatViewerHandler.uploaded_plys = {}
@@ -673,25 +676,38 @@ def start_viewer_server(
     if not SplatViewerHandler.supersplat_dist.joinpath("index.html").is_file():
         raise FileNotFoundError("Bundled SuperSplat build is missing from panogs/apps/viewer/supersplat_dist")
 
-    server_address = ("127.0.0.1", port)
-    httpd = ThreadingHTTPServer(server_address, SplatViewerHandler)
+    ThreadingHTTPServer.allow_reuse_address = False
+    httpd = None
+    chosen_port = port
+    max_attempts = 1 if port == 0 else 20
+    for offset in range(max_attempts):
+        candidate_port = 0 if port == 0 else port + offset
+        try:
+            httpd = ThreadingHTTPServer(("127.0.0.1", candidate_port), SplatViewerHandler)
+            chosen_port = httpd.server_address[1]
+            break
+        except OSError:
+            if offset == max_attempts - 1:
+                raise
+    assert httpd is not None
+    port = chosen_port
 
-    url = f"http://127.0.0.1:{port}"
+    url = f"http://127.0.0.1:{port}/studio" if SplatViewerHandler.studio_mode else f"http://127.0.0.1:{port}"
     page_mode = "lightweight reconstruction menu" if SplatViewerHandler.studio_mode else f"{num_gaussians:,} Gaussians loaded"
     logger.info(f"Serving PanoGS at {url} ({page_mode})")
 
     if open_browser:
-        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
 
     if block:
         try:
-            print(f"\n=======================================================")
-            print(f"  PanoGS Studio · {page_mode}")
-            print(f"  Running at:  {url}")
+            print("\n=======================================================", flush=True)
+            print(f"  PanoGS Studio - {page_mode}", flush=True)
+            print(f"  Running at:  {url}", flush=True)
             if not SplatViewerHandler.studio_mode:
-                print(f"  Gaussians:   {num_gaussians:,}")
-            print(f"  Press Ctrl+C in terminal to stop.")
-            print(f"=======================================================\n")
+                print(f"  Gaussians:   {num_gaussians:,}", flush=True)
+            print("  Press Ctrl+C in terminal to stop.", flush=True)
+            print("=======================================================\n", flush=True)
             httpd.serve_forever()
         except KeyboardInterrupt:
             logger.info("Viewer server stopped.")

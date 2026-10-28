@@ -5,15 +5,16 @@ Saves raw float32 arrays, metadata JSON, and colormapped visualizations.
 
 import json
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import TYPE_CHECKING, Optional, Tuple, Union
 import numpy as np
 from PIL import Image
 
-from panogs.reconstruction.depth.base import DepthEstimator, DepthResult
+if TYPE_CHECKING:
+    from panogs.reconstruction.depth.base import DepthEstimator, DepthResult
 
 
 def save_depth_result(
-    result: DepthResult,
+    result: "DepthResult",
     output_dir: Union[str, Path],
     prefix: str = "depth",
 ) -> Tuple[Path, Path, Path]:
@@ -37,6 +38,7 @@ def save_depth_result(
     np.save(npy_path, result.depth_map.astype(np.float32))
 
     # 2. Save colormapped visualization PNG
+    from panogs.reconstruction.depth.base import DepthEstimator
     vis_rgb = DepthEstimator.colorize(result)
     Image.fromarray(vis_rgb).save(vis_path)
 
@@ -61,10 +63,11 @@ def save_depth_result(
 def load_depth_result(
     npy_path: Union[str, Path],
     meta_path: Optional[Union[str, Path]] = None,
-) -> DepthResult:
+) -> "DepthResult":
     """
     Load a raw depth array and optional metadata file into a DepthResult.
     """
+    from panogs.reconstruction.depth.base import DepthResult
     npy_file = Path(npy_path)
     if not npy_file.exists():
         raise FileNotFoundError(f"Depth .npy file not found: {npy_file}")
